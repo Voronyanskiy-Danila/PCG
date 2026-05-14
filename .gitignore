@@ -1,0 +1,35 @@
+# Visual Studio
+bin/
+obj/
+.vs/
+*.user
+*.suo
+*.sln.docstates
+
+# Build results (MSVC intermediates — not Wavefront .obj under content/)
+[Dd]ebug/
+[Rr]elease/
+x64/
+*.exe
+*.pdb
+*.ilk
+*.log
+obj/**/*.obj
+
+# CMake
+build/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+
+# Temporary files
+*.tmp
+*.bak
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+

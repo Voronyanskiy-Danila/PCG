@@ -1,0 +1,31 @@
+cgwork4 — Sponza (DirectX 12)
+=============================
+
+Назначение
+----------
+Загрузка Sponza (OBJ + MTL + TGA), Phong, камера WASD + мышь.
+
+Корень
+------
+  DirectX12CustomLib.sln, DirectX12CustomLib.vcxproj — Visual Studio
+  CMakeLists.txt          — сборка CMake
+  build_auto.bat          — cl.exe + копирование content/
+
+  content/                — копируется в bin/.../Release/content/
+    shaders/phong.hlsl
+    models/sponza/        — sponza.obj, sponza.mtl, textures/*.tga
+    models/white.dds      — fallback (python tools/gen_white_dds.py)
+
+  tools/gen_white_dds.py
+
+  docs/PROJECT_STRUCTURE.txt
+
+  src/
+    application/   AppBase, CubeApp
+    engine/        FrameTimer, dx12
+    loaders/       ObjMtlLoader, TextureLoaderDirectXTex
+    math/          MathUtils
+
+Запуск
+------
+Собрать, затем exe из bin\x64\Release\ рядом с папкой content.
