@@ -95,11 +95,14 @@
     <ClCompile Include="src\core\FrameTiming.cpp">
       <Filter>src\core</Filter>
     </ClCompile>
+    <ClCompile Include="src\rendering\GBuffer.cpp">
+      <Filter>src\rendering</Filter>
+    </ClCompile>
+    <ClCompile Include="src\rendering\RenderingSystem.cpp">
+      <Filter>src\rendering</Filter>
+    </ClCompile>
     <ClCompile Include="src\rendering\d3d12\D3d12_RenderHelpers.cpp">
       <Filter>src\rendering\d3d12</Filter>
-    </ClCompile>
-    <ClCompile Include="src\math\MathUtils.cpp">
-      <Filter>src\math</Filter>
     </ClCompile>
     <ClCompile Include="src\importers\Importer_Wavefront_ObjMtl.cpp">
       <Filter>src\importers</Filter>
@@ -117,6 +120,15 @@
     </ClInclude>
     <ClInclude Include="src\core\FrameTiming.h">
       <Filter>src\core</Filter>
+    </ClInclude>
+    <ClInclude Include="src\rendering\GBuffer.h">
+      <Filter>src\rendering</Filter>
+    </ClInclude>
+    <ClInclude Include="src\rendering\GpuLightStructures.h">
+      <Filter>src\rendering</Filter>
+    </ClInclude>
+    <ClInclude Include="src\rendering\RenderingSystem.h">
+      <Filter>src\rendering</Filter>
     </ClInclude>
     <ClInclude Include="src\rendering\d3d12\D3d12_RenderHelpers.h">
       <Filter>src\rendering\d3d12</Filter>
@@ -143,6 +155,9 @@
     </Filter>
     <Filter Include="src\core">
       <UniqueIdentifier>{a1b1c1d1-c0c0-cccc-cccc-cccccccccccc}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="src\rendering">
+      <UniqueIdentifier>{a1b1c1d1-77e7-7777-7777-777777777777}</UniqueIdentifier>
     </Filter>
     <Filter Include="src\rendering\d3d12">
       <UniqueIdentifier>{a1b1c1d1-dd12-dddd-dddd-dddddddddddd}</UniqueIdentifier>

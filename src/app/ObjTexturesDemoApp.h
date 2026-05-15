@@ -2,12 +2,14 @@
 
 #include "../math/MathUtils.h"
 #include "../rendering/d3d12/D3d12_GpuUploadBuffer.h"
+#include "../rendering/RenderingSystem.h"
 #include "../importers/Importer_Wavefront_ObjMtl.h"
 #include "D3d12AppBase.h"
 
+#include <vector>
+
 using Microsoft::WRL::ComPtr;
 using namespace DirectX;
-using namespace DirectX::PackedVector;
 
 struct Vertex
 {
@@ -58,13 +60,13 @@ struct DrawSubmesh
 	float Ns = 32.0f;
 };
 
-class CubeApp : public AppBase
+class ObjTexturesDemoApp : public D3d12AppBase
 {
 public:
-	CubeApp(HINSTANCE hInstance);
-	CubeApp(const CubeApp& rhs) = delete;
-	CubeApp& operator=(const CubeApp& rhs) = delete;
-	~CubeApp();
+	ObjTexturesDemoApp(HINSTANCE hInstance);
+	ObjTexturesDemoApp(const ObjTexturesDemoApp& rhs) = delete;
+	ObjTexturesDemoApp& operator=(const ObjTexturesDemoApp& rhs) = delete;
+	~ObjTexturesDemoApp();
 
 	virtual bool Initialize() override;
 
@@ -81,17 +83,18 @@ private:
 	void BuildDescriptorHeaps(UINT srvCount);
 	void BuildConstantBuffers();
 	void BuildRootSignature();
-	void BuildShadersAndInputLayout();
+	void BuildGeometryInputLayout();
 	void LoadModelAndTextures();
 	void FitWorldAndCameraToMesh(const ObjMeshData& data);
 	void BuildModelGeometry(const ObjMeshData& data);
 	void CreateSrvForTexture(int heapIndex, ID3D12Resource* tex);
-	void BuildPSO();
+	void BuildDeferredGeometryPipeline();
+	void RefreshDeferredSrvs();
+	void SetupSceneLights();
 
 private:
 	ComPtr<ID3D12RootSignature> mRootSignature = nullptr;
 	ComPtr<ID3D12DescriptorHeap> mSrvHeap = nullptr;
-	UINT mSrvDescriptorCount = 0;
 
 	std::unique_ptr<GpuUploadBuffer<ObjectConstants>> mObjectCB = nullptr;
 
@@ -101,12 +104,13 @@ private:
 	std::vector<ComPtr<ID3D12Resource>> mTextureGPU;
 	std::vector<ComPtr<ID3D12Resource>> mTextureUploads;
 
-	ComPtr<ID3DBlob> mvsByteCode = nullptr;
-	ComPtr<ID3DBlob> mpsByteCode = nullptr;
-
 	std::vector<D3D12_INPUT_ELEMENT_DESC> mInputLayout;
 
-	ComPtr<ID3D12PipelineState> mPSO = nullptr;
+	ComPtr<ID3D12PipelineState> mDeferredGeoPSO = nullptr;
+
+	RenderingSystem mRenderer{};
+	UINT mDeferredSrvHeapBase = 0;
+	std::vector<GpuLight> mSceneLights;
 
 	XMFLOAT4X4 mWorld = MathUtils::Identity4x4();
 	XMFLOAT4X4 mView = MathUtils::Identity4x4();

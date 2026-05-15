@@ -4,7 +4,6 @@
 #include <objbase.h>
 
 using Microsoft::WRL::ComPtr;
-using namespace std;
 using namespace DirectX;
 
 LRESULT CALLBACK
@@ -12,24 +11,24 @@ MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
 	// Forward hwnd on because we can get messages (e.g., WM_CREATE)
 	// before CreateWindow returns, and thus before mhMainWnd is valid.
-    return AppBase::GetApp()->MsgProc(hwnd, msg, wParam, lParam);
+    return D3d12AppBase::GetApp()->MsgProc(hwnd, msg, wParam, lParam);
 }
 
-AppBase* AppBase::mApp = nullptr;
-AppBase* AppBase::GetApp()
+D3d12AppBase* D3d12AppBase::mApp = nullptr;
+D3d12AppBase* D3d12AppBase::GetApp()
 {
     return mApp;
 }
 
-AppBase::AppBase(HINSTANCE hInstance)
+D3d12AppBase::D3d12AppBase(HINSTANCE hInstance)
 :	mhAppInst(hInstance)
 {
-    // Only one AppBase can be constructed.
+    // Only one D3d12AppBase can be constructed.
     assert(mApp == nullptr);
     mApp = this;
 }
 
-AppBase::~AppBase()
+D3d12AppBase::~D3d12AppBase()
 {
 	if(md3dDevice != nullptr)
 		FlushCommandQueue();
@@ -37,27 +36,27 @@ AppBase::~AppBase()
 		CoUninitialize();
 }
 
-HINSTANCE AppBase::AppInst()const
+HINSTANCE D3d12AppBase::AppInst()const
 {
 	return mhAppInst;
 }
 
-HWND AppBase::MainWnd()const
+HWND D3d12AppBase::MainWnd()const
 {
 	return mhMainWnd;
 }
 
-float AppBase::AspectRatio()const
+float D3d12AppBase::AspectRatio()const
 {
 	return static_cast<float>(mClientWidth) / mClientHeight;
 }
 
-bool AppBase::Get4xMsaaState()const
+bool D3d12AppBase::Get4xMsaaState()const
 {
     return m4xMsaaState;
 }
 
-void AppBase::Set4xMsaaState(bool value)
+void D3d12AppBase::Set4xMsaaState(bool value)
 {
     if(m4xMsaaState != value)
     {
@@ -69,7 +68,7 @@ void AppBase::Set4xMsaaState(bool value)
     }
 }
 
-int AppBase::Run()
+int D3d12AppBase::Run()
 {
 	MSG msg = {0};
  
@@ -103,7 +102,7 @@ int AppBase::Run()
 	return (int)msg.wParam;
 }
 
-bool AppBase::Initialize()
+bool D3d12AppBase::Initialize()
 {
 	// WIC (через DirectXTex) требует COM — как в шаблоне D3D12 из курса / kg26-27.
 	{
@@ -126,7 +125,7 @@ bool AppBase::Initialize()
 	return true;
 }
  
-void AppBase::CreateRtvAndDsvDescriptorHeaps()
+void D3d12AppBase::CreateRtvAndDsvDescriptorHeaps()
 {
     D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc;
     rtvHeapDesc.NumDescriptors = SwapChainBufferCount;
@@ -146,7 +145,7 @@ void AppBase::CreateRtvAndDsvDescriptorHeaps()
         &dsvHeapDesc, IID_PPV_ARGS(mDsvHeap.GetAddressOf())));
 }
 
-void AppBase::OnResize()
+void D3d12AppBase::OnResize()
 {
     assert(md3dDevice);
     assert(mSwapChain);
@@ -247,7 +246,7 @@ void AppBase::OnResize()
     mScissorRect = { 0, 0, mClientWidth, mClientHeight };
 }
 
-LRESULT AppBase::MsgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+LRESULT D3d12AppBase::MsgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
 	switch( msg )
 	{
@@ -384,7 +383,7 @@ LRESULT AppBase::MsgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 	return DefWindowProc(hwnd, msg, wParam, lParam);
 }
 
-bool AppBase::InitMainWindow()
+bool D3d12AppBase::InitMainWindow()
 {
 	WNDCLASS wc;
 	wc.style         = CS_HREDRAW | CS_VREDRAW;
@@ -424,7 +423,7 @@ bool AppBase::InitMainWindow()
 	return true;
 }
 
-bool AppBase::InitDirect3D()
+bool D3d12AppBase::InitDirect3D()
 {
 #if defined(DEBUG) || defined(_DEBUG) 
 	// Enable the D3D12 debug layer.
@@ -478,10 +477,6 @@ bool AppBase::InitDirect3D()
 
     m4xMsaaQuality = msQualityLevels.NumQualityLevels;
 	assert(m4xMsaaQuality > 0 && "Unexpected MSAA quality level.");
-	
-#ifdef _DEBUG
-    LogAdapters();
-#endif
 
 	CreateCommandObjects();
     CreateSwapChain();
@@ -490,7 +485,7 @@ bool AppBase::InitDirect3D()
 	return true;
 }
 
-void AppBase::CreateCommandObjects()
+void D3d12AppBase::CreateCommandObjects()
 {
 	D3D12_COMMAND_QUEUE_DESC queueDesc = {};
 	queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
@@ -514,7 +509,7 @@ void AppBase::CreateCommandObjects()
 	mCommandList->Close();
 }
 
-void AppBase::CreateSwapChain()
+void D3d12AppBase::CreateSwapChain()
 {
     // Release the previous swapchain we will be recreating.
     mSwapChain.Reset();
@@ -543,7 +538,7 @@ void AppBase::CreateSwapChain()
 		mSwapChain.GetAddressOf()));
 }
 
-void AppBase::FlushCommandQueue()
+void D3d12AppBase::FlushCommandQueue()
 {
 	// Advance the fence value to mark commands up to this fence point.
 	mCurrentFence++;
@@ -567,12 +562,12 @@ void AppBase::FlushCommandQueue()
 	}
 }
 
-ID3D12Resource* AppBase::CurrentBackBuffer()const
+ID3D12Resource* D3d12AppBase::CurrentBackBuffer()const
 {
 	return mSwapChainBuffer[mCurrBackBuffer].Get();
 }
 
-D3D12_CPU_DESCRIPTOR_HANDLE AppBase::CurrentBackBufferView()const
+D3D12_CPU_DESCRIPTOR_HANDLE D3d12AppBase::CurrentBackBufferView()const
 {
 	return CD3DX12_CPU_DESCRIPTOR_HANDLE(
 		mRtvHeap->GetCPUDescriptorHandleForHeapStart(),
@@ -580,82 +575,7 @@ D3D12_CPU_DESCRIPTOR_HANDLE AppBase::CurrentBackBufferView()const
 		mRtvDescriptorSize);
 }
 
-D3D12_CPU_DESCRIPTOR_HANDLE AppBase::DepthStencilView()const
+D3D12_CPU_DESCRIPTOR_HANDLE D3d12AppBase::DepthStencilView()const
 {
 	return mDsvHeap->GetCPUDescriptorHandleForHeapStart();
-}
-
-void AppBase::LogAdapters()
-{
-    UINT i = 0;
-    IDXGIAdapter* adapter = nullptr;
-    std::vector<IDXGIAdapter*> adapterList;
-    while(mdxgiFactory->EnumAdapters(i, &adapter) != DXGI_ERROR_NOT_FOUND)
-    {
-        DXGI_ADAPTER_DESC desc;
-        adapter->GetDesc(&desc);
-
-        std::wstring text = L"***Adapter: ";
-        text += desc.Description;
-        text += L"\n";
-
-        OutputDebugString(text.c_str());
-
-        adapterList.push_back(adapter);
-        
-        ++i;
-    }
-
-    for(size_t i = 0; i < adapterList.size(); ++i)
-    {
-        LogAdapterOutputs(adapterList[i]);
-        ReleaseCom(adapterList[i]);
-    }
-}
-
-void AppBase::LogAdapterOutputs(IDXGIAdapter* adapter)
-{
-    UINT i = 0;
-    IDXGIOutput* output = nullptr;
-    while(adapter->EnumOutputs(i, &output) != DXGI_ERROR_NOT_FOUND)
-    {
-        DXGI_OUTPUT_DESC desc;
-        output->GetDesc(&desc);
-        
-        std::wstring text = L"***Output: ";
-        text += desc.DeviceName;
-        text += L"\n";
-        OutputDebugString(text.c_str());
-
-        LogOutputDisplayModes(output, mBackBufferFormat);
-
-        ReleaseCom(output);
-
-        ++i;
-    }
-}
-
-void AppBase::LogOutputDisplayModes(IDXGIOutput* output, DXGI_FORMAT format)
-{
-    UINT count = 0;
-    UINT flags = 0;
-
-    // Call with nullptr to get list count.
-    output->GetDisplayModeList(format, flags, &count, nullptr);
-
-    std::vector<DXGI_MODE_DESC> modeList(count);
-    output->GetDisplayModeList(format, flags, &count, &modeList[0]);
-
-    for(auto& x : modeList)
-    {
-        UINT n = x.RefreshRate.Numerator;
-        UINT d = x.RefreshRate.Denominator;
-        std::wstring text =
-            L"Width = " + std::to_wstring(x.Width) + L" " +
-            L"Height = " + std::to_wstring(x.Height) + L" " +
-            L"Refresh = " + std::to_wstring(n) + L"/" + std::to_wstring(d) +
-            L"\n";
-
-        ::OutputDebugString(text.c_str());
-    }
 }

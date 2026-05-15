@@ -1,28 +1,52 @@
-# Visual Studio
+# =============================================================================
+# PCG / DirectX12CustomLib — игнор только артефактов сборки и IDE.
+# Рабочая версия в git: исходники C++, HLSL, content/ (модели, текстуры), packages.
+# НЕ добавляйте сюда *.hlsl, content/**/*.obj (Wavefront), *.dds в content/.
+# =============================================================================
+
+# Visual Studio / MSBuild
 bin/
 obj/
 .vs/
 *.user
+*.userosscache
 *.suo
 *.sln.docstates
+*.VC.db
+*.VC.VC.opendb
+*.aps
+ipch/
 
-# Build results (MSVC intermediates — not Wavefront .obj under content/)
+# Конфигурации сборки (артефакты, не исходники)
 [Dd]ebug/
 [Rr]elease/
 x64/
+ARM64/
 *.exe
 *.pdb
 *.ilk
 *.log
+*.tlog
+*.idb
+*.pgc
+*.pgd
+*.rsp
+*.recipe
+*.FileListAbsolute.txt
+
+# В каталоге obj/ лежат промежуточные .obj линкера — не путать с content/**/*.obj
 obj/**/*.obj
 
-# CMake
+# CMake (локальная папка out-of-source)
 build/
+out/
 CMakeCache.txt
 CMakeFiles/
 cmake_install.cmake
+CMakeUserPresets.json
+Testing/
 
-# Temporary files
+# Временные файлы
 *.tmp
 *.bak
 *.swp
@@ -31,5 +55,7 @@ cmake_install.cmake
 # OS
 .DS_Store
 Thumbs.db
+Desktop.ini
 
-
+# Локальные скрипты/мусор (при необходимости раскомментируйте)
+# *.local.json

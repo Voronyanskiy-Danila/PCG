@@ -14,18 +14,18 @@
 #pragma comment(lib, "D3D12.lib")
 #pragma comment(lib, "dxgi.lib")
 
-class AppBase
+class D3d12AppBase
 {
 protected:
 
-    AppBase(HINSTANCE hInstance);
-    AppBase(const AppBase& rhs) = delete;
-    AppBase& operator=(const AppBase& rhs) = delete;
-    virtual ~AppBase();
+    D3d12AppBase(HINSTANCE hInstance);
+    D3d12AppBase(const D3d12AppBase& rhs) = delete;
+    D3d12AppBase& operator=(const D3d12AppBase& rhs) = delete;
+    virtual ~D3d12AppBase();
 
 public:
 
-    static AppBase* GetApp();
+    static D3d12AppBase* GetApp();
     
 	HINSTANCE AppInst()const;
 	HWND      MainWnd()const;
@@ -46,9 +46,9 @@ protected:
     virtual void Draw(const FrameTimer& gt)=0;
 
 	// Convenience overrides for handling mouse input.
-	virtual void OnMouseDown(WPARAM btnState, int x, int y){ }
-	virtual void OnMouseUp(WPARAM btnState, int x, int y)  { }
-	virtual void OnMouseMove(WPARAM btnState, int x, int y){ }
+	virtual void OnMouseDown(WPARAM, int, int) {}
+	virtual void OnMouseUp(WPARAM, int, int) {}
+	virtual void OnMouseMove(WPARAM, int, int) {}
 
 protected:
 
@@ -63,13 +63,7 @@ protected:
 	D3D12_CPU_DESCRIPTOR_HANDLE CurrentBackBufferView()const;
 	D3D12_CPU_DESCRIPTOR_HANDLE DepthStencilView()const;
 
-    void LogAdapters();
-    void LogAdapterOutputs(IDXGIAdapter* adapter);
-    void LogOutputDisplayModes(IDXGIOutput* output, DXGI_FORMAT format);
-
-protected:
-
-    static AppBase* mApp;
+	static D3d12AppBase* mApp;
 
     HINSTANCE mhAppInst = nullptr; // application instance handle
     HWND      mhMainWnd = nullptr; // main window handle

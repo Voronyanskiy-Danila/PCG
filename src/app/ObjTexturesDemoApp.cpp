@@ -1,7 +1,11 @@
 
 #include "ObjTexturesDemoApp.h"
 
+#include <DirectXColors.h>
+#include <filesystem>
+
 #include "../math/MathUtils.h"
+#include "../rendering/GBuffer.h"
 #include "../rendering/d3d12/D3d12_GpuUploadBuffer.h"
 #include "../importers/Importer_Image_DirectXTex.h"
 
@@ -13,14 +17,25 @@
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE prevInstance,
 				   PSTR cmdLine, int showCmd)
 {
-	// Enable run-time memory check for debug builds.
-#if defined(DEBUG) | defined(_DEBUG)
+	(void)prevInstance;
+	(void)cmdLine;
+	(void)showCmd;
+
+#if defined(DEBUG) || defined(_DEBUG)
 	_CrtSetDbgFlag( _CRTDBG_ALLOC_MEM_DF | _CRTDBG_LEAK_CHECK_DF );
 #endif
 
+	wchar_t modulePath[MAX_PATH] = {};
+	if (GetModuleFileNameW(nullptr, modulePath, MAX_PATH))
+	{
+		std::filesystem::path p(modulePath);
+		std::error_code ec;
+		std::filesystem::current_path(p.parent_path(), ec);
+	}
+
     try
     {
-        CubeApp theApp(hInstance);
+        ObjTexturesDemoApp theApp(hInstance);
         if(!theApp.Initialize())
             return 0;
 
@@ -33,19 +48,19 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE prevInstance,
     }
 }
 
-CubeApp::CubeApp(HINSTANCE hInstance)
-: AppBase(hInstance)
+ObjTexturesDemoApp::ObjTexturesDemoApp(HINSTANCE hInstance)
+: D3d12AppBase(hInstance)
 {
 	mMainWndCaption = L"Sponza — D3D12";
 }
 
-CubeApp::~CubeApp()
+ObjTexturesDemoApp::~ObjTexturesDemoApp()
 {
 }
 
-bool CubeApp::Initialize()
+bool ObjTexturesDemoApp::Initialize()
 {
-	if (!AppBase::Initialize())
+	if (!D3d12AppBase::Initialize())
 		return false;
 
 	ThrowIfFailed(mCommandList->Reset(mDirectCmdListAlloc.Get(), nullptr));
@@ -53,8 +68,13 @@ bool CubeApp::Initialize()
 	LoadModelAndTextures();
 
 	BuildRootSignature();
-	BuildShadersAndInputLayout();
-	BuildPSO();
+	BuildGeometryInputLayout();
+
+	mRenderer.Initialize(md3dDevice.Get(), mBackBufferFormat);
+	mRenderer.ResizeGBuffer(md3dDevice.Get(), static_cast<UINT>(mClientWidth), static_cast<UINT>(mClientHeight));
+	RefreshDeferredSrvs();
+	BuildDeferredGeometryPipeline();
+	SetupSceneLights();
 
 	ThrowIfFailed(mCommandList->Close());
 	ID3D12CommandList* cmdsLists[] = {mCommandList.Get()};
@@ -67,16 +87,20 @@ bool CubeApp::Initialize()
 	return true;
 }
 
-void CubeApp::OnResize()
+void ObjTexturesDemoApp::OnResize()
 {
-	AppBase::OnResize();
+	D3d12AppBase::OnResize();
 
     // The window resized, so update the aspect ratio and recompute the projection matrix.
     XMMATRIX P = XMMatrixPerspectiveFovLH(0.25f*MathUtils::Pi, AspectRatio(), 1.0f, 1000.0f);
     XMStoreFloat4x4(&mProj, P);
+
+	mRenderer.ResizeGBuffer(md3dDevice.Get(), static_cast<UINT>(mClientWidth), static_cast<UINT>(mClientHeight));
+	if (mSrvHeap)
+		RefreshDeferredSrvs();
 }
 
-void CubeApp::Update(const FrameTimer& gt)
+void ObjTexturesDemoApp::Update(const FrameTimer& gt)
 {
 	const float dt = gt.DeltaTime();
 	const float speed = mCameraSpeed * dt;
@@ -143,52 +167,41 @@ void CubeApp::Update(const FrameTimer& gt)
 	mSharedConstants = obj;
 }
 
-void CubeApp::Draw(const FrameTimer&)
+void ObjTexturesDemoApp::Draw(const FrameTimer&)
 {
-    // Reuse the memory associated with command recording.
-    // We can only reset when the associated command lists have finished execution on the GPU.
     ThrowIfFailed(mDirectCmdListAlloc->Reset());
-
-    // A command list can be reset after it has been added to the command queue via ExecuteCommandList.
-    // Reusing the command list reuses memory.
-    ThrowIfFailed(mCommandList->Reset(mDirectCmdListAlloc.Get(), mPSO.Get()));
+    ThrowIfFailed(mCommandList->Reset(mDirectCmdListAlloc.Get(), nullptr));
 
     mCommandList->RSSetViewports(1, &mScreenViewport);
     mCommandList->RSSetScissorRects(1, &mScissorRect);
 
-    // Indicate a state transition on the resource usage: Present -> RenderTarget.
-    {
-        auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(
-            CurrentBackBuffer(),
-            D3D12_RESOURCE_STATE_PRESENT,
-            D3D12_RESOURCE_STATE_RENDER_TARGET);
-        mCommandList->ResourceBarrier(1, &barrier);
-    }
+	ID3D12DescriptorHeap* descriptorHeaps[] = {mSrvHeap.Get()};
+	mCommandList->SetDescriptorHeaps(_countof(descriptorHeaps), descriptorHeaps);
 
-    // Clear the back buffer and depth buffer.
-    mCommandList->ClearRenderTargetView(CurrentBackBufferView(), Colors::White, 0, nullptr);
-    mCommandList->ClearDepthStencilView(
-        DepthStencilView(),
-        D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL,
-        1.0f, 0, 0, nullptr);
+	mRenderer.TransitionGbufferToRenderTarget(mCommandList.Get());
 
-    // Specify the buffers we are going to render to.
-    // FIX: cannot take address of a temporary handle.
-    const auto rtv = CurrentBackBufferView();
-    const auto dsv = DepthStencilView();
-    mCommandList->OMSetRenderTargets(1, &rtv, TRUE, &dsv);
+	GBuffer* gb = mRenderer.GetGBuffer();
+	const D3D12_CPU_DESCRIPTOR_HANDLE dsvGbuffer = gb->DsvCpu();
+	D3D12_CPU_DESCRIPTOR_HANDLE rtvMrt[GBuffer::kRtCount]{};
+	for (UINT i = 0; i < GBuffer::kRtCount; ++i)
+		rtvMrt[i] = gb->RtvCpu(i);
+	mCommandList->OMSetRenderTargets(GBuffer::kRtCount, rtvMrt, false, &dsvGbuffer);
 
-    ID3D12DescriptorHeap* descriptorHeaps[] = {mSrvHeap.Get()};
-    mCommandList->SetDescriptorHeaps(_countof(descriptorHeaps), descriptorHeaps);
+	const float clear0[4] = {0.f, 0.f, 0.f, 0.f};
+	for (UINT i = 0; i < GBuffer::kRtCount; ++i)
+		mCommandList->ClearRenderTargetView(rtvMrt[i], clear0, 0, nullptr);
+	mCommandList->ClearDepthStencilView(
+		dsvGbuffer,
+		D3D12_CLEAR_FLAG_DEPTH,
+		1.0f, 0, 0, nullptr);
 
-    mCommandList->SetGraphicsRootSignature(mRootSignature.Get());
+	mCommandList->SetPipelineState(mDeferredGeoPSO.Get());
+	mCommandList->SetGraphicsRootSignature(mRootSignature.Get());
 
 	const auto vbv = mModelGeo->VertexBufferView();
 	mCommandList->IASetVertexBuffers(0, 1, &vbv);
-
 	const auto ibv = mModelGeo->IndexBufferView();
 	mCommandList->IASetIndexBuffer(&ibv);
-
 	mCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
 	const UINT srvIncr = mCbvSrvUavDescriptorSize;
@@ -204,7 +217,6 @@ void CubeApp::Draw(const FrameTimer&)
 		per.HasDiffuseTexture = sm.HasDiffuseTexture ? 1.0f : 0.0f;
 
 		mObjectCB->CopyData(0, per);
-
 		mCommandList->SetGraphicsRootConstantBufferView(0, mObjectCB->Resource()->GetGPUVirtualAddress());
 
 		CD3DX12_GPU_DESCRIPTOR_HANDLE texH(srvBase);
@@ -214,7 +226,40 @@ void CubeApp::Draw(const FrameTimer&)
 		mCommandList->DrawIndexedInstanced(sm.IndexCount, 1, sm.StartIndexLocation, 0, 0);
 	}
 
-    // Indicate a state transition on the resource usage: RenderTarget -> Present.
+	mRenderer.TransitionGbufferToPixelShader(mCommandList.Get());
+
+	{
+        auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(
+            CurrentBackBuffer(),
+            D3D12_RESOURCE_STATE_PRESENT,
+            D3D12_RESOURCE_STATE_RENDER_TARGET);
+        mCommandList->ResourceBarrier(1, &barrier);
+    }
+
+	const auto bbRtv = CurrentBackBufferView();
+	mCommandList->OMSetRenderTargets(1, &bbRtv, false, nullptr);
+	mCommandList->ClearRenderTargetView(bbRtv, Colors::Black, 0, nullptr);
+
+	const XMMATRIX viewMat = XMLoadFloat4x4(&mView);
+	const XMMATRIX projMat = XMLoadFloat4x4(&mProj);
+	mRenderer.UpdateLightingFrameConstants(md3dDevice.Get(), viewMat, projMat, mCameraPos);
+
+	mRenderer.SetLightingPipeline(mCommandList.Get());
+	mCommandList->SetGraphicsRootConstantBufferView(
+		0,
+		mRenderer.LightingCb().Resource()->GetGPUVirtualAddress());
+
+	const CD3DX12_GPU_DESCRIPTOR_HANDLE lightSrv = mRenderer.LightingSrvGpuStart(
+		mSrvHeap.Get(),
+		mDeferredSrvHeapBase,
+		srvIncr);
+	mCommandList->SetGraphicsRootDescriptorTable(1, lightSrv);
+
+	mCommandList->IASetVertexBuffers(0, 0, nullptr);
+
+	mCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+	mCommandList->DrawInstanced(3, 1, 0, 0);
+
     {
         auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(
             CurrentBackBuffer(),
@@ -223,22 +268,18 @@ void CubeApp::Draw(const FrameTimer&)
         mCommandList->ResourceBarrier(1, &barrier);
     }
 
-    // Done recording commands.
     ThrowIfFailed(mCommandList->Close());
 
-    // Add the command list to the queue for execution.
     ID3D12CommandList* cmdsLists[] = { mCommandList.Get() };
     mCommandQueue->ExecuteCommandLists(_countof(cmdsLists), cmdsLists);
 
-    // Swap the back and front buffers.
     ThrowIfFailed(mSwapChain->Present(0, 0));
     mCurrBackBuffer = (mCurrBackBuffer + 1) % SwapChainBufferCount;
 
-    // Wait until frame commands are complete.
     FlushCommandQueue();
 }
 
-void CubeApp::OnMouseDown(WPARAM btnState, int x, int y)
+void ObjTexturesDemoApp::OnMouseDown(WPARAM /*btnState*/, int x, int y)
 {
     mLastMousePos.x = x;
     mLastMousePos.y = y;
@@ -246,12 +287,12 @@ void CubeApp::OnMouseDown(WPARAM btnState, int x, int y)
     SetCapture(mhMainWnd);
 }
 
-void CubeApp::OnMouseUp(WPARAM btnState, int x, int y)
+void ObjTexturesDemoApp::OnMouseUp(WPARAM /*btnState*/, int /*x*/, int /*y*/)
 {
     ReleaseCapture();
 }
 
-void CubeApp::OnMouseMove(WPARAM btnState, int x, int y)
+void ObjTexturesDemoApp::OnMouseMove(WPARAM btnState, int x, int y)
 {
 	if ((btnState & (MK_RBUTTON | MK_LBUTTON)) != 0)
 	{
@@ -268,9 +309,8 @@ void CubeApp::OnMouseMove(WPARAM btnState, int x, int y)
 	mLastMousePos.y = y;
 }
 
-void CubeApp::BuildDescriptorHeaps(UINT srvCount)
+void ObjTexturesDemoApp::BuildDescriptorHeaps(UINT srvCount)
 {
-	mSrvDescriptorCount = srvCount;
 	D3D12_DESCRIPTOR_HEAP_DESC dh{};
 	dh.NumDescriptors = srvCount;
 	dh.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
@@ -279,12 +319,12 @@ void CubeApp::BuildDescriptorHeaps(UINT srvCount)
 	ThrowIfFailed(md3dDevice->CreateDescriptorHeap(&dh, IID_PPV_ARGS(&mSrvHeap)));
 }
 
-void CubeApp::BuildConstantBuffers()
+void ObjTexturesDemoApp::BuildConstantBuffers()
 {
 	mObjectCB = std::make_unique<GpuUploadBuffer<ObjectConstants>>(md3dDevice.Get(), 1, true);
 }
 
-void CubeApp::BuildRootSignature()
+void ObjTexturesDemoApp::BuildRootSignature()
 {
 	CD3DX12_DESCRIPTOR_RANGE srvTable{};
 	srvTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0);
@@ -336,20 +376,8 @@ void CubeApp::BuildRootSignature()
 		IID_PPV_ARGS(&mRootSignature)));
 }
 
-void CubeApp::BuildShadersAndInputLayout()
+void ObjTexturesDemoApp::BuildGeometryInputLayout()
 {
-	mvsByteCode = Dx12Utils::CompileShader(
-		L"content/shaders/phong.hlsl",
-		nullptr,
-		"VS",
-		"vs_5_0");
-
-	mpsByteCode = Dx12Utils::CompileShader(
-		L"content/shaders/phong.hlsl",
-		nullptr,
-		"PS",
-		"ps_5_0");
-
 	mInputLayout = {
 		{"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
 		{"NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
@@ -357,7 +385,7 @@ void CubeApp::BuildShadersAndInputLayout()
 	};
 }
 
-void CubeApp::CreateSrvForTexture(int heapIndex, ID3D12Resource* tex)
+void ObjTexturesDemoApp::CreateSrvForTexture(int heapIndex, ID3D12Resource* tex)
 {
 	D3D12_RESOURCE_DESC desc = tex->GetDesc();
 	D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc{};
@@ -373,7 +401,7 @@ void CubeApp::CreateSrvForTexture(int heapIndex, ID3D12Resource* tex)
 	md3dDevice->CreateShaderResourceView(tex, &srvDesc, h);
 }
 
-void CubeApp::BuildModelGeometry(const ObjMeshData& data)
+void ObjTexturesDemoApp::BuildModelGeometry(const ObjMeshData& data)
 {
 	const size_t n = data.Positions.size();
 	std::vector<Vertex> verts(n);
@@ -415,14 +443,12 @@ void CubeApp::BuildModelGeometry(const ObjMeshData& data)
 	mModelGeo->IndexFormat = DXGI_FORMAT_R32_UINT;
 	mModelGeo->IndexBufferByteSize = ibByteSize;
 
-	SubmeshGeometry submesh{};
-	submesh.IndexCount = static_cast<UINT>(data.Indices32.size());
-	submesh.StartIndexLocation = 0;
-	submesh.BaseVertexLocation = 0;
-	mModelGeo->DrawArgs["model"] = submesh;
+	mModelGeo->IndexCount = static_cast<UINT>(data.Indices32.size());
+	mModelGeo->StartIndexLocation = 0;
+	mModelGeo->BaseVertexLocation = 0;
 }
 
-void CubeApp::FitWorldAndCameraToMesh(const ObjMeshData& data)
+void ObjTexturesDemoApp::FitWorldAndCameraToMesh(const ObjMeshData& data)
 {
 	if (data.Positions.empty())
 		return;
@@ -468,7 +494,7 @@ void CubeApp::FitWorldAndCameraToMesh(const ObjMeshData& data)
 	mPitch = asinf(MathUtils::Clamp(XMVectorGetY(toCenter), -0.99f, 0.99f));
 }
 
-void CubeApp::LoadModelAndTextures()
+void ObjTexturesDemoApp::LoadModelAndTextures()
 {
 	std::wstring err;
 	ObjMeshData data;
@@ -501,7 +527,8 @@ void CubeApp::LoadModelAndTextures()
 		}
 	}
 
-	const UINT srvCount = 1u + static_cast<UINT>(loadOrder.size());
+	mDeferredSrvHeapBase = 1u + static_cast<UINT>(loadOrder.size());
+	const UINT srvCount = mDeferredSrvHeapBase + GBuffer::kRtCount + 1u;
 	BuildDescriptorHeaps(srvCount);
 	BuildConstantBuffers();
 
@@ -575,33 +602,95 @@ void CubeApp::LoadModelAndTextures()
 	FitWorldAndCameraToMesh(data);
 }
 
-void CubeApp::BuildPSO()
+void ObjTexturesDemoApp::BuildDeferredGeometryPipeline()
 {
 	D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc{};
 	psoDesc.InputLayout = {mInputLayout.data(), (UINT)mInputLayout.size()};
 	psoDesc.pRootSignature = mRootSignature.Get();
+
+	if (!mRenderer.GeomVsByteCode() || !mRenderer.GeomPsByteCode())
+		throw DxException(E_FAIL,
+			L"Deferred geometry shaders are not initialized.",
+			AnsiToWString(__FILE__),
+			__LINE__);
+
 	psoDesc.VS = {
-		reinterpret_cast<BYTE*>(mvsByteCode->GetBufferPointer()),
-		mvsByteCode->GetBufferSize()};
+		reinterpret_cast<BYTE*>(mRenderer.GeomVsByteCode()->GetBufferPointer()),
+		mRenderer.GeomVsByteCode()->GetBufferSize()};
 	psoDesc.PS = {
-		reinterpret_cast<BYTE*>(mpsByteCode->GetBufferPointer()),
-		mpsByteCode->GetBufferSize()};
+		reinterpret_cast<BYTE*>(mRenderer.GeomPsByteCode()->GetBufferPointer()),
+		mRenderer.GeomPsByteCode()->GetBufferSize()};
+
 	psoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
-	// OBJ Sponza: в экране передняя грань по часовой; CCW-as-front (TRUE) даёт «изнанку».
 	psoDesc.RasterizerState.FrontCounterClockwise = FALSE;
 	psoDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
 	psoDesc.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT);
 	psoDesc.SampleMask = UINT_MAX;
 	psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-	psoDesc.NumRenderTargets = 1;
-	psoDesc.RTVFormats[0] = mBackBufferFormat;
-	psoDesc.SampleDesc.Count = m4xMsaaState ? 4 : 1;
-	psoDesc.SampleDesc.Quality = m4xMsaaState ? (m4xMsaaQuality - 1) : 0;
-	psoDesc.DSVFormat = mDepthStencilFormat;
-	ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&mPSO)));
+	psoDesc.NumRenderTargets = GBuffer::kRtCount;
+	for (UINT i = 0; i < GBuffer::kRtCount; ++i)
+		psoDesc.RTVFormats[i] = GBuffer::RtFormat(i);
+	for (UINT i = GBuffer::kRtCount; i < 8; ++i)
+		psoDesc.RTVFormats[i] = DXGI_FORMAT_UNKNOWN;
+	psoDesc.SampleDesc.Count = 1;
+	psoDesc.SampleDesc.Quality = 0;
+	psoDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+	ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&mDeferredGeoPSO)));
 }
 
-LRESULT CubeApp::MsgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+void ObjTexturesDemoApp::RefreshDeferredSrvs()
+{
+	if (!mSrvHeap)
+		return;
+	mRenderer.CreateDeferredSrvs(
+		md3dDevice.Get(),
+		mDeferredSrvHeapBase,
+		mCbvSrvUavDescriptorSize,
+		mSrvHeap.Get());
+}
+
+void ObjTexturesDemoApp::SetupSceneLights()
+{
+	mSceneLights.clear();
+
+	GpuLight sun{};
+	sun.Type = kLightTypeDirectional;
+	sun.Direction = XMFLOAT3(0.577f, -0.577f, 0.577f);
+	{
+		const XMVECTOR d = XMVector3Normalize(XMLoadFloat3(&sun.Direction));
+		XMStoreFloat3(&sun.Direction, d);
+	}
+	sun.Color = XMFLOAT3(1.f, 1.f, 1.f);
+	sun.Intensity = 1.0f;
+	mSceneLights.push_back(sun);
+
+	GpuLight pt{};
+	pt.Type = kLightTypePoint;
+	pt.Position = XMFLOAT3(8.f, 14.f, 0.f);
+	pt.Range = 35.f;
+	pt.Color = XMFLOAT3(0.6f, 0.75f, 1.f);
+	pt.Intensity = 2.5f;
+	mSceneLights.push_back(pt);
+
+	GpuLight sp{};
+	sp.Type = kLightTypeSpot;
+	sp.Position = XMFLOAT3(-10.f, 22.f, 8.f);
+	sp.Direction = XMFLOAT3(0.3f, -0.85f, -0.2f);
+	{
+		const XMVECTOR sd = XMVector3Normalize(XMLoadFloat3(&sp.Direction));
+		XMStoreFloat3(&sp.Direction, sd);
+	}
+	sp.Range = 45.f;
+	sp.Color = XMFLOAT3(1.f, 0.92f, 0.75f);
+	sp.Intensity = 3.2f;
+	sp.SpotInnerCos = cosf(XMConvertToRadians(18.f));
+	sp.SpotOuterCos = cosf(XMConvertToRadians(32.f));
+	mSceneLights.push_back(sp);
+
+	mRenderer.SetLights(mSceneLights.data(), static_cast<UINT>(mSceneLights.size()));
+}
+
+LRESULT ObjTexturesDemoApp::MsgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
 	switch (msg)
 	{
@@ -663,5 +752,5 @@ LRESULT CubeApp::MsgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 		break;
 	}
 
-	return AppBase::MsgProc(hwnd, msg, wParam, lParam);
+	return D3d12AppBase::MsgProc(hwnd, msg, wParam, lParam);
 }
