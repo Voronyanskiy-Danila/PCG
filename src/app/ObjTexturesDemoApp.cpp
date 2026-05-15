@@ -1,16 +1,17 @@
 
 #include "ObjTexturesDemoApp.h"
 
-#include <DirectXColors.h>
+#include "AppFixedContentPaths.h"
+#include "TextureUvSettings.h"
+
+#include <cstdio>
 #include <filesystem>
 
 #include "../math/MathUtils.h"
+#include "../math/SceneFit.h"
 #include "../rendering/GBuffer.h"
 #include "../rendering/d3d12/D3d12_GpuUploadBuffer.h"
-#include "../importers/Importer_Image_DirectXTex.h"
 
-#include <unordered_map>
-#include <unordered_set>
 #include <vector>
 #include <algorithm>
 
@@ -33,19 +34,20 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE prevInstance,
 		std::filesystem::current_path(p.parent_path(), ec);
 	}
 
-    try
-    {
-        ObjTexturesDemoApp theApp(hInstance);
-        if(!theApp.Initialize())
-            return 0;
 
-        return theApp.Run();
-    }
-    catch(DxException& e)
-    {
-        MessageBox(nullptr, e.ToString().c_str(), L"HR Failed", MB_OK);
-        return 0;
-    }
+	try
+	{
+		ObjTexturesDemoApp theApp(hInstance);
+		if (!theApp.Initialize())
+			return 0;
+
+		return theApp.Run();
+	}
+	catch (DxException& e)
+	{
+		MessageBox(nullptr, e.ToString().c_str(), L"HR Failed", MB_OK);
+		return 0;
+	}
 }
 
 ObjTexturesDemoApp::ObjTexturesDemoApp(HINSTANCE hInstance)
@@ -62,6 +64,8 @@ bool ObjTexturesDemoApp::Initialize()
 {
 	if (!D3d12AppBase::Initialize())
 		return false;
+
+	LoadIniTextureUvSettings();
 
 	ThrowIfFailed(mCommandList->Reset(mDirectCmdListAlloc.Get(), nullptr));
 
@@ -87,13 +91,51 @@ bool ObjTexturesDemoApp::Initialize()
 	return true;
 }
 
+void ObjTexturesDemoApp::LoadIniTextureUvSettings()
+{
+	TextureUvSettings cfg{};
+	cfg.TilingRepeatsX = mUvScale.x;
+	cfg.TilingRepeatsY = mUvScale.y;
+	cfg.TextureMovementEnabled = mTextureMovementEnabled;
+
+	const std::filesystem::path path =
+		std::filesystem::path(kUvSettingsContentDirectory) / L"texture_uv_settings.ini";
+	[[maybe_unused]] const bool ok = TextureUvSettings::LoadIni(path.c_str(), cfg);
+
+#if defined(DEBUG) || defined(_DEBUG)
+	wchar_t buf[768];
+	swprintf_s(
+		buf,
+		L"[texture_uv_settings.ini]\n path=%s\n ok=%d  tiling=(%.4f, %.4f)  movement=%d\n",
+		path.c_str(),
+		ok ? 1 : 0,
+		cfg.TilingRepeatsX,
+		cfg.TilingRepeatsY,
+		cfg.TextureMovementEnabled ? 1 : 0);
+	OutputDebugStringW(buf);
+#endif
+
+	mUvScale.x = cfg.TilingRepeatsX;
+	mUvScale.y = cfg.TilingRepeatsY;
+	mTextureMovementEnabled = cfg.TextureMovementEnabled;
+}
+
+XMVECTOR ObjTexturesDemoApp::CameraForwardNormalized() const
+{
+	const float cp = cosf(mPitch);
+	const float sp = sinf(mPitch);
+	const float cy = cosf(mYaw);
+	const float sy = sinf(mYaw);
+	XMVECTOR v = XMVectorSet(sy * cp, sp, cy * cp, 0.f);
+	return XMVector3Normalize(v);
+}
+
 void ObjTexturesDemoApp::OnResize()
 {
 	D3d12AppBase::OnResize();
 
-    // The window resized, so update the aspect ratio and recompute the projection matrix.
-    XMMATRIX P = XMMatrixPerspectiveFovLH(0.25f*MathUtils::Pi, AspectRatio(), 1.0f, 1000.0f);
-    XMStoreFloat4x4(&mProj, P);
+	XMMATRIX P = XMMatrixPerspectiveFovLH(0.25f * MathUtils::Pi, AspectRatio(), 1.0f, 1000.0f);
+	XMStoreFloat4x4(&mProj, P);
 
 	mRenderer.ResizeGBuffer(md3dDevice.Get(), static_cast<UINT>(mClientWidth), static_cast<UINT>(mClientHeight));
 	if (mSrvHeap)
@@ -105,13 +147,7 @@ void ObjTexturesDemoApp::Update(const FrameTimer& gt)
 	const float dt = gt.DeltaTime();
 	const float speed = mCameraSpeed * dt;
 
-	const float cp = cosf(mPitch);
-	const float sp = sinf(mPitch);
-	const float cy = cosf(mYaw);
-	const float sy = sinf(mYaw);
-
-	XMVECTOR forward = XMVectorSet(sy * cp, sp, cy * cp, 0.0f);
-	forward = XMVector3Normalize(forward);
+	XMVECTOR forward = CameraForwardNormalized();
 
 	static const XMVECTOR kWorldUp = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
 	XMVECTOR right = XMVector3Cross(kWorldUp, forward);
@@ -160,123 +196,27 @@ void ObjTexturesDemoApp::Update(const FrameTimer& gt)
 	obj.LightColor = XMFLOAT3(1.0f, 1.0f, 1.0f);
 	obj.AmbientK = 0.15f;
 
-	obj.UvAnimParams = XMFLOAT4(gt.TotalTime(), 0.0f, 0.0f, 0.0f);
+	obj.UvAnimParams =
+		XMFLOAT4(gt.TotalTime(), mTextureMovementEnabled ? 1.f : 0.f, 0.f, 0.f);
 	obj.UvScale = mUvScale;
 	obj.UvScroll = mUvScroll;
 
 	mSharedConstants = obj;
+
+	UpdateCameraAttachedSpotLight();
+	mRenderer.SetLights(mSceneLights.data(), static_cast<UINT>(mSceneLights.size()));
 }
 
-void ObjTexturesDemoApp::Draw(const FrameTimer&)
+void ObjTexturesDemoApp::UpdateCameraAttachedSpotLight()
 {
-    ThrowIfFailed(mDirectCmdListAlloc->Reset());
-    ThrowIfFailed(mCommandList->Reset(mDirectCmdListAlloc.Get(), nullptr));
+	if (mSceneLights.size() < 2u || mSceneLights[1].Type != kLightTypeSpot)
+		return;
 
-    mCommandList->RSSetViewports(1, &mScreenViewport);
-    mCommandList->RSSetScissorRects(1, &mScissorRect);
+	XMVECTOR forward = CameraForwardNormalized();
 
-	ID3D12DescriptorHeap* descriptorHeaps[] = {mSrvHeap.Get()};
-	mCommandList->SetDescriptorHeaps(_countof(descriptorHeaps), descriptorHeaps);
-
-	mRenderer.TransitionGbufferToRenderTarget(mCommandList.Get());
-
-	GBuffer* gb = mRenderer.GetGBuffer();
-	const D3D12_CPU_DESCRIPTOR_HANDLE dsvGbuffer = gb->DsvCpu();
-	D3D12_CPU_DESCRIPTOR_HANDLE rtvMrt[GBuffer::kRtCount]{};
-	for (UINT i = 0; i < GBuffer::kRtCount; ++i)
-		rtvMrt[i] = gb->RtvCpu(i);
-	mCommandList->OMSetRenderTargets(GBuffer::kRtCount, rtvMrt, false, &dsvGbuffer);
-
-	const float clear0[4] = {0.f, 0.f, 0.f, 0.f};
-	for (UINT i = 0; i < GBuffer::kRtCount; ++i)
-		mCommandList->ClearRenderTargetView(rtvMrt[i], clear0, 0, nullptr);
-	mCommandList->ClearDepthStencilView(
-		dsvGbuffer,
-		D3D12_CLEAR_FLAG_DEPTH,
-		1.0f, 0, 0, nullptr);
-
-	mCommandList->SetPipelineState(mDeferredGeoPSO.Get());
-	mCommandList->SetGraphicsRootSignature(mRootSignature.Get());
-
-	const auto vbv = mModelGeo->VertexBufferView();
-	mCommandList->IASetVertexBuffers(0, 1, &vbv);
-	const auto ibv = mModelGeo->IndexBufferView();
-	mCommandList->IASetIndexBuffer(&ibv);
-	mCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-
-	const UINT srvIncr = mCbvSrvUavDescriptorSize;
-	const CD3DX12_GPU_DESCRIPTOR_HANDLE srvBase(mSrvHeap->GetGPUDescriptorHandleForHeapStart());
-
-	for (const DrawSubmesh& sm : mDrawSubmeshes)
-	{
-		ObjectConstants per = mSharedConstants;
-		per.MatKa = sm.Ka;
-		per.MatKd = sm.Kd;
-		per.MatKs = sm.Ks;
-		per.MatNs = sm.Ns;
-		per.HasDiffuseTexture = sm.HasDiffuseTexture ? 1.0f : 0.0f;
-
-		mObjectCB->CopyData(0, per);
-		mCommandList->SetGraphicsRootConstantBufferView(0, mObjectCB->Resource()->GetGPUVirtualAddress());
-
-		CD3DX12_GPU_DESCRIPTOR_HANDLE texH(srvBase);
-		texH.Offset(sm.DiffuseSrvIndex, srvIncr);
-		mCommandList->SetGraphicsRootDescriptorTable(1, texH);
-
-		mCommandList->DrawIndexedInstanced(sm.IndexCount, 1, sm.StartIndexLocation, 0, 0);
-	}
-
-	mRenderer.TransitionGbufferToPixelShader(mCommandList.Get());
-
-	{
-        auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(
-            CurrentBackBuffer(),
-            D3D12_RESOURCE_STATE_PRESENT,
-            D3D12_RESOURCE_STATE_RENDER_TARGET);
-        mCommandList->ResourceBarrier(1, &barrier);
-    }
-
-	const auto bbRtv = CurrentBackBufferView();
-	mCommandList->OMSetRenderTargets(1, &bbRtv, false, nullptr);
-	mCommandList->ClearRenderTargetView(bbRtv, Colors::Black, 0, nullptr);
-
-	const XMMATRIX viewMat = XMLoadFloat4x4(&mView);
-	const XMMATRIX projMat = XMLoadFloat4x4(&mProj);
-	mRenderer.UpdateLightingFrameConstants(md3dDevice.Get(), viewMat, projMat, mCameraPos);
-
-	mRenderer.SetLightingPipeline(mCommandList.Get());
-	mCommandList->SetGraphicsRootConstantBufferView(
-		0,
-		mRenderer.LightingCb().Resource()->GetGPUVirtualAddress());
-
-	const CD3DX12_GPU_DESCRIPTOR_HANDLE lightSrv = mRenderer.LightingSrvGpuStart(
-		mSrvHeap.Get(),
-		mDeferredSrvHeapBase,
-		srvIncr);
-	mCommandList->SetGraphicsRootDescriptorTable(1, lightSrv);
-
-	mCommandList->IASetVertexBuffers(0, 0, nullptr);
-
-	mCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-	mCommandList->DrawInstanced(3, 1, 0, 0);
-
-    {
-        auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(
-            CurrentBackBuffer(),
-            D3D12_RESOURCE_STATE_RENDER_TARGET,
-            D3D12_RESOURCE_STATE_PRESENT);
-        mCommandList->ResourceBarrier(1, &barrier);
-    }
-
-    ThrowIfFailed(mCommandList->Close());
-
-    ID3D12CommandList* cmdsLists[] = { mCommandList.Get() };
-    mCommandQueue->ExecuteCommandLists(_countof(cmdsLists), cmdsLists);
-
-    ThrowIfFailed(mSwapChain->Present(0, 0));
-    mCurrBackBuffer = (mCurrBackBuffer + 1) % SwapChainBufferCount;
-
-    FlushCommandQueue();
+	GpuLight& spot = mSceneLights[1];
+	spot.Position = mCameraPos;
+	XMStoreFloat3(&spot.Direction, forward);
 }
 
 void ObjTexturesDemoApp::OnMouseDown(WPARAM /*btnState*/, int x, int y)
@@ -450,156 +390,11 @@ void ObjTexturesDemoApp::BuildModelGeometry(const ObjMeshData& data)
 
 void ObjTexturesDemoApp::FitWorldAndCameraToMesh(const ObjMeshData& data)
 {
-	if (data.Positions.empty())
-		return;
-
-	XMFLOAT3 mn = data.Positions[0];
-	XMFLOAT3 mx = data.Positions[0];
-	for (const XMFLOAT3& p : data.Positions)
-	{
-		mn.x = (std::min)(mn.x, p.x);
-		mn.y = (std::min)(mn.y, p.y);
-		mn.z = (std::min)(mn.z, p.z);
-		mx.x = (std::max)(mx.x, p.x);
-		mx.y = (std::max)(mx.y, p.y);
-		mx.z = (std::max)(mx.z, p.z);
-	}
-
-	const XMVECTOR mnV = XMLoadFloat3(&mn);
-	const XMVECTOR mxV = XMLoadFloat3(&mx);
-	const XMVECTOR center = XMVectorScale(XMVectorAdd(mnV, mxV), 0.5f);
-	XMFLOAT3 centerF;
-	XMStoreFloat3(&centerF, center);
-
-	const XMVECTOR ext = XMVectorSubtract(mxV, mnV);
-	const float ex = (std::max)({ XMVectorGetX(ext), XMVectorGetY(ext), XMVectorGetZ(ext) });
-	constexpr float kTargetExtents = 30.0f;
-	const float s = (ex > 1e-6f) ? (kTargetExtents / ex) : 1.0f;
-
-	const XMMATRIX world =
-		XMMatrixTranslation(-centerF.x, -centerF.y, -centerF.z) * XMMatrixScaling(s, s, s);
-	XMStoreFloat4x4(&mWorld, world);
-
-	const float diagonal = XMVectorGetX(XMVector3Length(ext));
-	const float sceneSize = diagonal * s;
-	const float dist = (std::min)(200.0f, (std::max)(14.0f, sceneSize * 0.62f));
-
-	// Стартовая позиция как у прежней орбиты; yaw/pitch выставляем так, чтобы смотреть на центр сцены.
-	const float theta = 1.5f * XM_PI;
-	const float phi = XM_PIDIV4;
-	const XMVECTOR pos = MathUtils::SphericalToCartesian(dist, theta, phi);
-	XMStoreFloat3(&mCameraPos, pos);
-	const XMVECTOR toCenter = XMVector3Normalize(XMVectorNegate(pos));
-	mYaw = atan2f(XMVectorGetX(toCenter), XMVectorGetZ(toCenter));
-	mPitch = asinf(MathUtils::Clamp(XMVectorGetY(toCenter), -0.99f, 0.99f));
-}
-
-void ObjTexturesDemoApp::LoadModelAndTextures()
-{
-	std::wstring err;
-	ObjMeshData data;
-	const wchar_t* kObjPath = L"content/models/sponza/sponza.obj";
-
-	if (!LoadWavefrontObj(kObjPath, data, err))
-	{
-		std::wstring msg = err;
-		msg += L"\n\nExpected: content/models/sponza/sponza.obj, sponza.mtl, textures/*.tga";
-		throw DxException(E_FAIL, msg, AnsiToWString(__FILE__), __LINE__);
-	}
-
-	std::unordered_set<std::string> usedMat;
-	for (const auto& sm : data.Submeshes)
-		usedMat.insert(sm.MaterialName);
-
-	std::unordered_map<std::wstring, int> texPathToSrv;
-	std::vector<std::wstring> loadOrder;
-
-	for (const auto& matName : usedMat)
-	{
-		auto itMat = data.Materials.find(matName);
-		if (itMat == data.Materials.end())
-			continue;
-		const std::wstring& p = itMat->second.DiffuseTexturePath;
-		if (!p.empty() && texPathToSrv.find(p) == texPathToSrv.end())
-		{
-			texPathToSrv[p] = static_cast<int>(1 + loadOrder.size());
-			loadOrder.push_back(p);
-		}
-	}
-
-	mDeferredSrvHeapBase = 1u + static_cast<UINT>(loadOrder.size());
-	const UINT srvCount = mDeferredSrvHeapBase + GBuffer::kRtCount + 1u;
-	BuildDescriptorHeaps(srvCount);
-	BuildConstantBuffers();
-
-	mTextureGPU.assign(srvCount, {});
-	mTextureUploads.assign(srvCount, {});
-
-	HRESULT hr = LoadTextureImageFromFile12(
-		md3dDevice.Get(),
-		mCommandList.Get(),
-		L"content/models/white.dds",
-		mTextureGPU[0],
-		mTextureUploads[0]);
-	ThrowIfFailed(hr);
-	CreateSrvForTexture(0, mTextureGPU[0].Get());
-
-	for (size_t i = 0; i < loadOrder.size(); ++i)
-	{
-		const UINT slot = static_cast<UINT>(1u + i);
-		hr = LoadTextureImageFromFile12(
-			md3dDevice.Get(),
-			mCommandList.Get(),
-			loadOrder[i].c_str(),
-			mTextureGPU[slot],
-			mTextureUploads[slot]);
-		if (FAILED(hr))
-		{
-			hr = LoadTextureImageFromFile12(
-				md3dDevice.Get(),
-				mCommandList.Get(),
-				L"content/models/white.dds",
-				mTextureGPU[slot],
-				mTextureUploads[slot]);
-		}
-		ThrowIfFailed(hr);
-		CreateSrvForTexture(static_cast<int>(slot), mTextureGPU[slot].Get());
-	}
-
-	BuildModelGeometry(data);
-
-	mDrawSubmeshes.clear();
-	for (const auto& sm : data.Submeshes)
-	{
-		DrawSubmesh d{};
-		d.StartIndexLocation = sm.StartIndexLocation;
-		d.IndexCount = sm.IndexCount;
-		auto itMat = data.Materials.find(sm.MaterialName);
-		if (itMat == data.Materials.end())
-		{
-			d.DiffuseSrvIndex = 0;
-			d.HasDiffuseTexture = false;
-			mDrawSubmeshes.push_back(d);
-			continue;
-		}
-		const MtlMaterial& m = itMat->second;
-		d.Ka = m.Ka;
-		d.Kd = m.Kd;
-		d.Ks = m.Ks;
-		d.Ns = m.Ns;
-		const bool hasTex = !m.DiffuseTexturePath.empty();
-		d.HasDiffuseTexture = hasTex;
-		if (!hasTex)
-			d.DiffuseSrvIndex = 0;
-		else
-		{
-			auto tp = texPathToSrv.find(m.DiffuseTexturePath);
-			d.DiffuseSrvIndex = (tp != texPathToSrv.end()) ? tp->second : 0;
-		}
-		mDrawSubmeshes.push_back(d);
-	}
-
-	FitWorldAndCameraToMesh(data);
+	const SceneFitResult fit = ComputeSceneFit(data);
+	mWorld = fit.World;
+	mCameraPos = fit.CameraPos;
+	mYaw = fit.CameraYaw;
+	mPitch = fit.CameraPitch;
 }
 
 void ObjTexturesDemoApp::BuildDeferredGeometryPipeline()
@@ -651,42 +446,36 @@ void ObjTexturesDemoApp::RefreshDeferredSrvs()
 
 void ObjTexturesDemoApp::SetupSceneLights()
 {
+	// Зелёный point в центре сцены (центр спонзы после FitWorld ~ (0,0,0)); spot с камеры — UpdateCameraAttachedSpotLight.
 	mSceneLights.clear();
 
-	GpuLight sun{};
-	sun.Type = kLightTypeDirectional;
-	sun.Direction = XMFLOAT3(0.577f, -0.577f, 0.577f);
-	{
-		const XMVECTOR d = XMVector3Normalize(XMLoadFloat3(&sun.Direction));
-		XMStoreFloat3(&sun.Direction, d);
-	}
-	sun.Color = XMFLOAT3(1.f, 1.f, 1.f);
-	sun.Intensity = 1.0f;
-	mSceneLights.push_back(sun);
+	const float keyLightIntensity = 5.25f;
 
 	GpuLight pt{};
 	pt.Type = kLightTypePoint;
-	pt.Position = XMFLOAT3(8.f, 14.f, 0.f);
-	pt.Range = 35.f;
-	pt.Color = XMFLOAT3(0.6f, 0.75f, 1.f);
-	pt.Intensity = 2.5f;
+	pt.Position = XMFLOAT3(0.f, 0.f, 0.f);
+	pt.Range = 36.f;
+	pt.Color = XMFLOAT3(0.12f, 1.f, 0.32f);
+	pt.Intensity = keyLightIntensity * 0.5f;
+	pt.Direction = XMFLOAT3(0.f, -1.f, 0.f);
+	pt.SpotInnerCos = 0.f;
+	pt.SpotOuterCos = 0.f;
+	pt.Padding = XMFLOAT2(0.f, 0.f);
 	mSceneLights.push_back(pt);
 
 	GpuLight sp{};
 	sp.Type = kLightTypeSpot;
-	sp.Position = XMFLOAT3(-10.f, 22.f, 8.f);
-	sp.Direction = XMFLOAT3(0.3f, -0.85f, -0.2f);
-	{
-		const XMVECTOR sd = XMVector3Normalize(XMLoadFloat3(&sp.Direction));
-		XMStoreFloat3(&sp.Direction, sd);
-	}
-	sp.Range = 45.f;
-	sp.Color = XMFLOAT3(1.f, 0.92f, 0.75f);
-	sp.Intensity = 3.2f;
-	sp.SpotInnerCos = cosf(XMConvertToRadians(18.f));
-	sp.SpotOuterCos = cosf(XMConvertToRadians(32.f));
+	sp.Position = mCameraPos;
+	sp.Direction = XMFLOAT3(0.f, 0.f, 1.f);
+	sp.Range = 32.f;
+	sp.Color = XMFLOAT3(0.85f, 0.92f, 1.f);
+	sp.Intensity = keyLightIntensity;
+	sp.SpotInnerCos = cosf(XMConvertToRadians(8.f));
+	sp.SpotOuterCos = cosf(XMConvertToRadians(17.f));
+	sp.Padding = XMFLOAT2(0.f, 0.f);
 	mSceneLights.push_back(sp);
 
+	UpdateCameraAttachedSpotLight();
 	mRenderer.SetLights(mSceneLights.data(), static_cast<UINT>(mSceneLights.size()));
 }
 

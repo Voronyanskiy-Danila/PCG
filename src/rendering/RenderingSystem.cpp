@@ -187,12 +187,21 @@ void RenderingSystem::SetLights(const GpuLight* lights, UINT count)
 
 void RenderingSystem::UpdateLightingFrameConstants(
 	ID3D12Device*,
-	const XMMATRIX&,
-	const XMMATRIX&,
-	const XMFLOAT3& eyeWorld)
+	const XMFLOAT3& eyeWorld,
+	const XMFLOAT3& dirLightWorld,
+	const XMFLOAT3& dirLightColor,
+	float dirIntensity)
 {
 	DeferredLightingConstants c{};
 	c.EyeWorld = XMFLOAT4(eyeWorld.x, eyeWorld.y, eyeWorld.z, 1.f);
+
+	XMFLOAT3 dirN{};
+	XMVECTOR dv = XMVector3Normalize(XMLoadFloat3(&dirLightWorld));
+	XMStoreFloat3(&dirN, dv);
+	c.DirDirection = XMFLOAT4(dirN.x, dirN.y, dirN.z, 0.f);
+
+	c.DirColorIntensity = XMFLOAT4(dirLightColor.x, dirLightColor.y, dirLightColor.z, dirIntensity);
+
 	c.NumLights = m_lightCount;
 	c._Pad0 = c._Pad1 = c._Pad2 = 0;
 	m_lightingCb->CopyData(0, c);

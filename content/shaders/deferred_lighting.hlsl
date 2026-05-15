@@ -26,6 +26,8 @@ StructuredBuffer<GpuLight> gLights : register(t4);
 cbuffer LightingCB : register(b0)
 {
 	float4 gEyeWorld;
+	float4 gDirLightDirection;
+	float4 gDirColorIntensity;
 	uint   gNumLights;
 	uint   _p0;
 	uint   _p1;
@@ -67,7 +69,9 @@ float4 PS_Light(VSQuadOut pin, float4 posSs : SV_Position) : SV_Target
 	float3 albedo = albedoS.rgb;
 
 	float4 nS = gBufNormal.Sample(gPointClamp, uv);
-	float3 N = normalize(nS.xyz);
+	// После Clear MRT обычно (0,0,0): normalize даёт NaN и «убивает» весь кадр.
+	float nLen2 = dot(nS.xyz, nS.xyz);
+	float3 N = nLen2 > 1e-8f ? nS.xyz * rsqrt(nLen2) : float3(0.f, 0.f, 1.f);
 
 	float4 pS = gBufPosition.Sample(gPointClamp, uv);
 	float3 pw = pS.xyz;
@@ -77,39 +81,47 @@ float4 PS_Light(VSQuadOut pin, float4 posSs : SV_Position) : SV_Target
 	float specNorm = saturate(mx.a);
 
 	float3 eye = gEyeWorld.xyz;
-	float3 V = normalize(eye - pw);
+	float3 vw = eye - pw;
+	float vLen2 = dot(vw, vw);
+	float3 V = vLen2 > 1e-10f ? vw * rsqrt(vLen2) : float3(0.f, 0.f, -1.f);
 
 	float3 diffuseAcc = float3(0, 0, 0);
 	float3 specAcc = float3(0, 0, 0);
 
+	const float shininess = lerp(1.f, 256.f, specNorm * specNorm);
+
+	float3 dd = gDirLightDirection.xyz;
+	float dDirs = dot(dd, dd);
+	if (dDirs > 1e-8f)
+	{
+		float3 L = normalize(-dd);
+		float3 sunCol = gDirColorIntensity.xyz * gDirColorIntensity.w;
+
+		float NdotL = saturate(dot(N, L));
+		float3 diffuse = NdotL * albedo;
+
+		float3 hv = L + V;
+		float hh = dot(hv, hv);
+		float3 H = hh > 1e-12f ? hv * rsqrt(hh) : N;
+		float nh = saturate(dot(N, H));
+		float specAmt = pow(max(nh, 0.f), shininess) * NdotL;
+
+		diffuseAcc += diffuse * sunCol;
+		specAcc += specAmt * matKs * sunCol;
+	}
+
 	const uint MAX_L = 48u;
 	uint nLights = min(gNumLights, MAX_L);
-
-	const float shininess = lerp(1.f, 256.f, specNorm * specNorm);
 
 	for (uint i = 0u; i < nLights; ++i)
 	{
 		GpuLight Ld = gLights[i];
+		if (Ld.Type == kLightTypeDirectional)
+			continue;
+
 		float3 col = Ld.Color * Ld.Intensity;
 
-		if (Ld.Type == kLightTypeDirectional)
-		{
-			float d2 = dot(Ld.Direction, Ld.Direction);
-			if (d2 < 1e-8f)
-				continue;
-			float3 L = normalize(-Ld.Direction);
-
-			float NdotL = saturate(dot(N, L));
-			float3 diffuse = NdotL * albedo;
-
-			float3 H = normalize(L + V);
-			float nh = saturate(dot(N, H));
-			float specAmt = pow(nh, shininess) * NdotL;
-
-			diffuseAcc += diffuse * col;
-			specAcc += specAmt * matKs * col;
-		}
-		else if (Ld.Type == kLightTypePoint)
+		if (Ld.Type == kLightTypePoint)
 		{
 			float3 toL = Ld.Position - pw;
 			float dist = length(toL);
@@ -120,12 +132,14 @@ float4 PS_Light(VSQuadOut pin, float4 posSs : SV_Position) : SV_Target
 			float NdotL = saturate(dot(N, L));
 			float3 diffuse = NdotL * albedo;
 
-			float3 H = normalize(L + V);
-			float nh = saturate(dot(N, H));
-			float specAmt = pow(nh, shininess) * NdotL;
+			float3 hvp = L + V;
+			float hhp = dot(hvp, hvp);
+			float3 Hpt = hhp > 1e-12f ? hvp * rsqrt(hhp) : N;
+			float nhP = saturate(dot(N, Hpt));
+			float specAmt = pow(max(nhP, 0.f), shininess) * NdotL;
 
-			float dd = saturate(1.f - dist / max(Ld.Range, 1e-4f));
-			float att = dd * dd;
+			float rp = saturate(1.f - dist / max(Ld.Range, 1e-4f));
+			float att = rp * rp;
 
 			diffuseAcc += diffuse * col * att;
 			specAcc += specAmt * matKs * col * att;
@@ -153,12 +167,14 @@ float4 PS_Light(VSQuadOut pin, float4 posSs : SV_Position) : SV_Target
 			float NdotL = saturate(dot(N, L));
 			float3 diffuse = NdotL * albedo;
 
-			float3 H = normalize(L + V);
-			float nh = saturate(dot(N, H));
-			float specAmt = pow(nh, shininess) * NdotL;
+			float3 hvs = L + V;
+			float hhs = dot(hvs, hvs);
+			float3 Hst = hhs > 1e-12f ? hvs * rsqrt(hhs) : N;
+			float nhS = saturate(dot(N, Hst));
+			float specAmt = pow(max(nhS, 0.f), shininess) * NdotL;
 
-			float dd = saturate(1.f - dist / max(Ld.Range, 1e-4f));
-			float att = dd * dd * spot;
+			float rq = saturate(1.f - dist / max(Ld.Range, 1e-4f));
+			float att = rq * rq * spot;
 
 			diffuseAcc += diffuse * col * att;
 			specAcc += specAmt * matKs * col * att;

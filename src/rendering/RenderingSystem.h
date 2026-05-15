@@ -38,9 +38,10 @@ public:
 	void SetLights(const GpuLight* lights, UINT count);
 	void UpdateLightingFrameConstants(
 		ID3D12Device*,
-		const DirectX::XMMATRIX& view,
-		const DirectX::XMMATRIX& proj,
-		const DirectX::XMFLOAT3& eyeWorld);
+		const DirectX::XMFLOAT3& eyeWorld,
+		const DirectX::XMFLOAT3& dirLightWorld,
+		const DirectX::XMFLOAT3& dirLightColor,
+		float dirIntensity);
 
 	void TransitionGbufferToRenderTarget(ID3D12GraphicsCommandList* cmd);
 	void TransitionGbufferToPixelShader(ID3D12GraphicsCommandList* cmd);

@@ -92,8 +92,20 @@
     <ClCompile Include="src\app\ObjTexturesDemoApp.cpp">
       <Filter>src\app</Filter>
     </ClCompile>
+    <ClCompile Include="src\app\ObjTexturesDemoApp_Draw.cpp">
+      <Filter>src\app</Filter>
+    </ClCompile>
+    <ClCompile Include="src\app\ObjTexturesDemoApp_SceneLoader.cpp">
+      <Filter>src\app</Filter>
+    </ClCompile>
+    <ClCompile Include="src\app\TextureUvSettings.cpp">
+      <Filter>src\app</Filter>
+    </ClCompile>
     <ClCompile Include="src\core\FrameTiming.cpp">
       <Filter>src\core</Filter>
+    </ClCompile>
+    <ClCompile Include="src\math\SceneFit.cpp">
+      <Filter>src\math</Filter>
     </ClCompile>
     <ClCompile Include="src\rendering\GBuffer.cpp">
       <Filter>src\rendering</Filter>
@@ -112,10 +124,16 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="src\app\AppFixedContentPaths.h">
+      <Filter>src\app</Filter>
+    </ClInclude>
     <ClInclude Include="src\app\D3d12AppBase.h">
       <Filter>src\app</Filter>
     </ClInclude>
     <ClInclude Include="src\app\ObjTexturesDemoApp.h">
+      <Filter>src\app</Filter>
+    </ClInclude>
+    <ClInclude Include="src\app\TextureUvSettings.h">
       <Filter>src\app</Filter>
     </ClInclude>
     <ClInclude Include="src\core\FrameTiming.h">
@@ -140,6 +158,9 @@
       <Filter>src\rendering\d3d12</Filter>
     </ClInclude>
     <ClInclude Include="src\math\MathUtils.h">
+      <Filter>src\math</Filter>
+    </ClInclude>
+    <ClInclude Include="src\math\SceneFit.h">
       <Filter>src\math</Filter>
     </ClInclude>
     <ClInclude Include="src\importers\Importer_Wavefront_ObjMtl.h">

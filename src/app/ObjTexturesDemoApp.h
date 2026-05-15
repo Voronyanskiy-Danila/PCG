@@ -44,7 +44,7 @@ struct ObjectConstants
 
 	XMFLOAT2 UvScale = {1.0f, 1.0f};
 	XMFLOAT2 UvScroll = {0.0f, 0.0f};
-	// .x = время (с); float4 — как в HLSL, без «дырок» в CB.
+	// Совпадает с deferred_gbuffer.hlsl: .x = время; .y = движение UV вкл.(1)/выкл.(0).
 	XMFLOAT4 UvAnimParams = {0.0f, 0.0f, 0.0f, 0.0f};
 };
 
@@ -91,8 +91,17 @@ private:
 	void BuildDeferredGeometryPipeline();
 	void RefreshDeferredSrvs();
 	void SetupSceneLights();
+	void LoadIniTextureUvSettings();
 
-private:
+	XMVECTOR CameraForwardNormalized() const;
+
+	void UpdateCameraAttachedSpotLight();
+
+	void StartDeferredFrameRecording();
+	void RunDeferredGeometryPass();
+	void RunDeferredLightingPass();
+	void SubmitCommandListPresentAndFlush();
+
 	ComPtr<ID3D12RootSignature> mRootSignature = nullptr;
 	ComPtr<ID3D12DescriptorHeap> mSrvHeap = nullptr;
 
@@ -136,7 +145,7 @@ private:
 
 	XMFLOAT2 mUvScale = {1.08f, 1.08f};
 	XMFLOAT2 mUvScroll = {0.018f, 0.014f};
+	bool mTextureMovementEnabled = true;
 
 	ObjectConstants mSharedConstants{};
 };
-

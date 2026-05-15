@@ -17,11 +17,11 @@ obj/
 *.aps
 ipch/
 
-# Конфигурации сборки (артефакты, не исходники)
-[Dd]ebug/
-[Rr]elease/
-x64/
-ARM64/
+# Папки конфигураций только в корне репозитория (не трогать NuGet: .../native/lib/x64/Debug и т.п.)
+/Debug/
+/Release/
+/x64/
+/ARM64/
 *.exe
 *.pdb
 *.ilk

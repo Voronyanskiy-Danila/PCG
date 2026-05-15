@@ -1,9 +1,13 @@
 @echo off
-setlocal EnableExtensions
-REM Build via MSBuild (same as VS). Avoids fragile "echo cl.exe ... " temp scripts.
+REM Lab2+: build через MSBuild (как Visual Studio). Надёжнее, чем ручной cl для другой структуры каталогов.
+REM Опционально восстанавливает NuGet (DirectXTex) через цель /restore.
+setlocal EnableExtensions EnableDelayedExpansion
 
-set "CFG=Release"
-set "PLATFORM=x64"
+set "CFG=%~1"
+set "PLATFORM=%~2"
+
+if "%CFG%"=="" set "CFG=Release"
+if "%PLATFORM%"=="" set "PLATFORM=x64"
 
 set "MSBUILD="
 for %%E in (
@@ -16,12 +20,12 @@ for %%E in (
 ) do if exist %%~E set "MSBUILD=%%~E"
 
 if "%MSBUILD%"=="" (
-  echo ERROR: MSBuild.exe not found. Install Visual Studio 2022 with "Desktop development with C++".
+  echo ERROR: MSBuild.exe not found. Install VS 2022 with "Desktop development with C++".
   exit /b 1
 )
 
 echo ========================================
-echo DirectX12CustomLib — %PLATFORM% ^| %CFG%
+echo DirectX12CustomLib  %PLATFORM%^| %CFG%
 echo MSBuild: %MSBUILD%
 echo ========================================
 echo.

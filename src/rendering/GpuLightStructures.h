@@ -1,6 +1,7 @@
 #pragma once
 
 #include <DirectXMath.h>
+#include <cstddef>
 #include <cstdint>
 
 constexpr UINT kGpuLightStride = 64u;
@@ -10,7 +11,7 @@ constexpr UINT kLightTypeDirectional = 0u;
 constexpr UINT kLightTypePoint = 1u;
 constexpr UINT kLightTypeSpot = 2u;
 
-#pragma pack(push, 16)
+// То же упакование, что у struct GpuLight в deferred_lighting.hlsl (StructuredBuffer stride 64).
 struct GpuLight
 {
 	DirectX::XMFLOAT3 Position{};
@@ -23,16 +24,27 @@ struct GpuLight
 	float SpotOuterCos = 0.92f;
 	DirectX::XMFLOAT2 Padding{};
 };
-#pragma pack(pop)
 static_assert(sizeof(GpuLight) == kGpuLightStride, "GpuLight size mismatch");
+static_assert(offsetof(GpuLight, Position) == 0u);
+static_assert(offsetof(GpuLight, Type) == 12u);
+static_assert(offsetof(GpuLight, Direction) == 16u);
+static_assert(offsetof(GpuLight, Range) == 28u);
+static_assert(offsetof(GpuLight, Color) == 32u);
+static_assert(offsetof(GpuLight, Intensity) == 44u);
+static_assert(offsetof(GpuLight, SpotInnerCos) == 48u);
+static_assert(offsetof(GpuLight, SpotOuterCos) == 52u);
+static_assert(offsetof(GpuLight, Padding) == 56u);
 
-// Только поля, реально читаемые в deferred_lighting.hlsl — layout должен совпадать с HLSL cbuffer.
+// cbufferLightingCB register(b0): все float4 сначала — совпадение упаковки с HLSL.
+// Направленный свет идёт сюда (как во forward phong.hlsl по LightDirW). StructuredBuffer — point/spot.
 struct DeferredLightingConstants
 {
 	DirectX::XMFLOAT4 EyeWorld{};
+	DirectX::XMFLOAT4 DirDirection{};           // xyz = нормализованный LightDirW, w = 0
+	DirectX::XMFLOAT4 DirColorIntensity{};      // rgb = цвет, w = множитель (интенсивность)
 	UINT NumLights = 0;
 	UINT _Pad0 = 0;
 	UINT _Pad1 = 0;
 	UINT _Pad2 = 0;
 };
-static_assert(sizeof(DeferredLightingConstants) == 32u, "DeferredLightingConstants size");
+static_assert(sizeof(DeferredLightingConstants) == 64u, "DeferredLightingConstants size");

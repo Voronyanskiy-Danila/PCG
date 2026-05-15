@@ -25,6 +25,7 @@ cbuffer ObjectCB : register(b0)
 
 	float2   gUvScale;
 	float2   gUvScroll;
+	// .x = время (с); .y = 1 — движение UV, 0 — только тайлинг.
 	float4   gUvAnimParams;
 };
 
@@ -59,9 +60,10 @@ PSInput VS(VSInput vin)
 	vout.PosH = mul(float4(vin.PosL, 1.0f), gWorldViewProj);
 
 	float t = gUvAnimParams.x;
-	float2 uv = vin.Tex * gUvScale + t * gUvScroll;
-	uv.x += sin(t * 0.35 + vin.Tex.y * 5.0) * 0.012;
-	uv.y += sin(t * 0.3 + vin.Tex.x * 4.5) * 0.01;
+	const float move = gUvAnimParams.y;
+	float2 uv = vin.Tex * gUvScale + move * (t * gUvScroll);
+	uv.x += move * sin(t * 0.35 + vin.Tex.y * 5.0) * 0.012;
+	uv.y += move * sin(t * 0.3 + vin.Tex.x * 4.5) * 0.01;
 	vout.TexAnim = uv;
 
 	return vout;
