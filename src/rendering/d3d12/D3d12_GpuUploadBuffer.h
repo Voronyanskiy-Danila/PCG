@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Dx12Utils.h"
+#include "D3d12_RenderHelpers.h"
 
 template<typename T>
 class GpuUploadBuffer

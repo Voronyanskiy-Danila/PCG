@@ -6,8 +6,8 @@
 #include <crtdbg.h>
 #endif
 
-#include "../engine/dx12/Dx12Utils.h"
-#include "../engine/FrameTimer.h"
+#include "../rendering/d3d12/D3d12_RenderHelpers.h"
+#include "../core/FrameTiming.h"
 
 // Link necessary d3d12 libraries.
 #pragma comment(lib,"d3dcompiler.lib")

@@ -20,7 +20,7 @@
 #include <fstream>
 #include <sstream>
 #include <cassert>
-#include "Dx12Core.h"
+#include "d3dx12.h"
 #include "../../math/MathUtils.h"
 
 extern const int gNumFrameResources;

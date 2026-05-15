@@ -1,6 +1,6 @@
 
 #include <windows.h>
-#include "FrameTimer.h"
+#include "FrameTiming.h"
 
 FrameTimer::FrameTimer()
 : mSecondsPerCount(0.0), mDeltaTime(-1.0), mBaseTime(0), 

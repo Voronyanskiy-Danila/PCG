@@ -1,9 +1,9 @@
 
-#include "CubeApp.h"
+#include "ObjTexturesDemoApp.h"
 
 #include "../math/MathUtils.h"
-#include "../engine/dx12/GpuUploadBuffer.h"
-#include "../loaders/TextureLoaderDirectXTex.h"
+#include "../rendering/d3d12/D3d12_GpuUploadBuffer.h"
+#include "../importers/Importer_Image_DirectXTex.h"
 
 #include <unordered_map>
 #include <unordered_set>

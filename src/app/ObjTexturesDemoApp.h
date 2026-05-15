@@ -1,9 +1,9 @@
 ﻿#pragma once
 
 #include "../math/MathUtils.h"
-#include "../engine/dx12/GpuUploadBuffer.h"
-#include "../loaders/ObjMtlLoader.h"
-#include "AppBase.h"
+#include "../rendering/d3d12/D3d12_GpuUploadBuffer.h"
+#include "../importers/Importer_Wavefront_ObjMtl.h"
+#include "D3d12AppBase.h"
 
 using Microsoft::WRL::ComPtr;
 using namespace DirectX;

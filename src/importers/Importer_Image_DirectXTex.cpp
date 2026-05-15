@@ -1,6 +1,6 @@
-#include "TextureLoaderDirectXTex.h"
+#include "Importer_Image_DirectXTex.h"
 
-#include "../engine/dx12/Dx12Core.h"
+#include "../rendering/d3d12/d3dx12.h"
 
 #include <DirectXTex.h>
 #include <algorithm>

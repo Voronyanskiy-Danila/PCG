@@ -1,4 +1,4 @@
-#include "ObjMtlLoader.h"
+#include "Importer_Wavefront_ObjMtl.h"
 
 #include <algorithm>
 #include <cctype>

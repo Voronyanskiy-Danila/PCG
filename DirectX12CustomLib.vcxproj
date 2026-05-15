@@ -11,7 +11,7 @@
     </ProjectConfiguration>
   </ItemGroup>
   <PropertyGroup Label="Globals">
-    <VCProjectVersion>16.0</VCProjectVersion>
+    <VCProjectVersion>17.0</VCProjectVersion>
     <Keyword>Win32Proj</Keyword>
     <ProjectGuid>{A1B2C3D4-E5F6-4A5B-8C7D-9E0F1A2B3C4D}</ProjectGuid>
     <RootNamespace>DirectX12CustomLib</RootNamespace>
@@ -32,10 +32,8 @@
     <WholeProgramOptimization>true</WholeProgramOptimization>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
-  <ImportGroup Label="ExtensionSettings">
-  </ImportGroup>
-  <ImportGroup Label="Shared">
-  </ImportGroup>
+  <ImportGroup Label="ExtensionSettings" />
+  <ImportGroup Label="Shared" />
   <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
   </ImportGroup>
@@ -88,72 +86,72 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="src\application\AppBase.cpp">
-      <Filter>src\application</Filter>
+    <ClCompile Include="src\app\D3d12AppBase.cpp">
+      <Filter>src\app</Filter>
     </ClCompile>
-    <ClCompile Include="src\application\CubeApp.cpp">
-      <Filter>src\application</Filter>
+    <ClCompile Include="src\app\ObjTexturesDemoApp.cpp">
+      <Filter>src\app</Filter>
     </ClCompile>
-    <ClCompile Include="src\engine\FrameTimer.cpp">
-      <Filter>src\engine</Filter>
+    <ClCompile Include="src\core\FrameTiming.cpp">
+      <Filter>src\core</Filter>
     </ClCompile>
-    <ClCompile Include="src\engine\dx12\Dx12Utils.cpp">
-      <Filter>src\engine\dx12</Filter>
+    <ClCompile Include="src\rendering\d3d12\D3d12_RenderHelpers.cpp">
+      <Filter>src\rendering\d3d12</Filter>
     </ClCompile>
     <ClCompile Include="src\math\MathUtils.cpp">
       <Filter>src\math</Filter>
     </ClCompile>
-    <ClCompile Include="src\loaders\ObjMtlLoader.cpp">
-      <Filter>src\loaders</Filter>
+    <ClCompile Include="src\importers\Importer_Wavefront_ObjMtl.cpp">
+      <Filter>src\importers</Filter>
     </ClCompile>
-    <ClCompile Include="src\loaders\TextureLoaderDirectXTex.cpp">
-      <Filter>src\loaders</Filter>
+    <ClCompile Include="src\importers\Importer_Image_DirectXTex.cpp">
+      <Filter>src\importers</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="src\application\AppBase.h">
-      <Filter>src\application</Filter>
+    <ClInclude Include="src\app\D3d12AppBase.h">
+      <Filter>src\app</Filter>
     </ClInclude>
-    <ClInclude Include="src\application\CubeApp.h">
-      <Filter>src\application</Filter>
+    <ClInclude Include="src\app\ObjTexturesDemoApp.h">
+      <Filter>src\app</Filter>
     </ClInclude>
-    <ClInclude Include="src\engine\FrameTimer.h">
-      <Filter>src\engine</Filter>
+    <ClInclude Include="src\core\FrameTiming.h">
+      <Filter>src\core</Filter>
     </ClInclude>
-    <ClInclude Include="src\engine\dx12\Dx12Core.h">
-      <Filter>src\engine\dx12</Filter>
+    <ClInclude Include="src\rendering\d3d12\D3d12_RenderHelpers.h">
+      <Filter>src\rendering\d3d12</Filter>
     </ClInclude>
-    <ClInclude Include="src\engine\dx12\Dx12Utils.h">
-      <Filter>src\engine\dx12</Filter>
+    <ClInclude Include="src\rendering\d3d12\D3d12_GpuUploadBuffer.h">
+      <Filter>src\rendering\d3d12</Filter>
     </ClInclude>
-    <ClInclude Include="src\engine\dx12\GpuUploadBuffer.h">
-      <Filter>src\engine\dx12</Filter>
+    <ClInclude Include="src\rendering\d3d12\d3dx12.h">
+      <Filter>src\rendering\d3d12</Filter>
     </ClInclude>
     <ClInclude Include="src\math\MathUtils.h">
       <Filter>src\math</Filter>
     </ClInclude>
-    <ClInclude Include="src\loaders\ObjMtlLoader.h">
-      <Filter>src\loaders</Filter>
+    <ClInclude Include="src\importers\Importer_Wavefront_ObjMtl.h">
+      <Filter>src\importers</Filter>
     </ClInclude>
-    <ClInclude Include="src\loaders\TextureLoaderDirectXTex.h">
-      <Filter>src\loaders</Filter>
+    <ClInclude Include="src\importers\Importer_Image_DirectXTex.h">
+      <Filter>src\importers</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
-    <Filter Include="src\application">
-      <UniqueIdentifier>{a1b1c1d1-1111-1111-1111-111111111111}</UniqueIdentifier>
+    <Filter Include="src\app">
+      <UniqueIdentifier>{a1b1c1d1-a1aa-aaaa-aaaa-aaaaaaaaaaaa}</UniqueIdentifier>
     </Filter>
-    <Filter Include="src\engine">
-      <UniqueIdentifier>{a1b1c1d1-2222-2222-2222-222222222222}</UniqueIdentifier>
+    <Filter Include="src\core">
+      <UniqueIdentifier>{a1b1c1d1-c0c0-cccc-cccc-cccccccccccc}</UniqueIdentifier>
     </Filter>
-    <Filter Include="src\engine\dx12">
-      <UniqueIdentifier>{a1b1c1d1-3333-3333-3333-333333333333}</UniqueIdentifier>
+    <Filter Include="src\rendering\d3d12">
+      <UniqueIdentifier>{a1b1c1d1-dd12-dddd-dddd-dddddddddddd}</UniqueIdentifier>
     </Filter>
     <Filter Include="src\math">
       <UniqueIdentifier>{a1b1c1d1-5555-5555-5555-555555555555}</UniqueIdentifier>
     </Filter>
-    <Filter Include="src\loaders">
-      <UniqueIdentifier>{a1b1c1d1-6666-6666-6666-666666666666}</UniqueIdentifier>
+    <Filter Include="src\importers">
+      <UniqueIdentifier>{a1b1c1d1-f1ee-eeee-eeee-eeeeeeeeeeee}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
   <ItemGroup>
@@ -162,8 +160,7 @@
   </ItemGroup>
   <Import Project="$(ProjectDir)packages\directxtex_desktop_win10.2025.10.28.1\build\native\directxtex_desktop_win10.targets" Condition="Exists('$(ProjectDir)packages\directxtex_desktop_win10.2025.10.28.1\build\native\directxtex_desktop_win10.targets')" />
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
-  <ImportGroup Label="ExtensionTargets">
-  </ImportGroup>
+  <ImportGroup Label="ExtensionTargets" />
   <Target Name="CopyContent" AfterTargets="Build">
     <ItemGroup>
       <ContentFiles Include="content\**\*" />
