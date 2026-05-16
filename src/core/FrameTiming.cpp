@@ -1,6 +1,6 @@
+#include "FrameTiming.h"
 
 #include <windows.h>
-#include "FrameTiming.h"
 
 FrameTimer::FrameTimer()
 : mSecondsPerCount(0.0), mDeltaTime(-1.0), mBaseTime(0), 
@@ -13,7 +13,7 @@ FrameTimer::FrameTimer()
 
 // Returns the total time elapsed since Reset() was called, NOT counting any
 // time when the clock is stopped.
-float FrameTimer::TotalTime()const
+float FrameTimer::TotalTime() const
 {
 	// If we are stopped, do not count the time that has passed since we stopped.
 	// Moreover, if we previously already had a pause, the distance 
@@ -45,7 +45,7 @@ float FrameTimer::TotalTime()const
 	}
 }
 
-float FrameTimer::DeltaTime()const
+float FrameTimer::DeltaTime() const
 {
 	return (float)mDeltaTime;
 }

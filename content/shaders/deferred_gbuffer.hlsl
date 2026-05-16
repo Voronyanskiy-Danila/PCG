@@ -1,4 +1,4 @@
-// G-buffer fill: те же параметры модели и UV, что в phong.hlsl.
+// G-buffer fill: те же параметры модели и UV, что в прежнем forward-шейдере.
 cbuffer ObjectCB : register(b0)
 {
 	float4x4 gWorld;

@@ -36,7 +36,7 @@ static_assert(offsetof(GpuLight, SpotOuterCos) == 52u);
 static_assert(offsetof(GpuLight, Padding) == 56u);
 
 // cbufferLightingCB register(b0): все float4 сначала — совпадение упаковки с HLSL.
-// Направленный свет идёт сюда (как во forward phong.hlsl по LightDirW). StructuredBuffer — point/spot.
+// Направленный свет (как в forward-пайплайне по LightDirW). StructuredBuffer — point/spot.
 struct DeferredLightingConstants
 {
 	DirectX::XMFLOAT4 EyeWorld{};

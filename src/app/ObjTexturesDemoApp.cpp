@@ -1,19 +1,14 @@
-
 #include "ObjTexturesDemoApp.h"
 
-#include "AppFixedContentPaths.h"
 #include "TextureUvSettings.h"
-
-#include <cstdio>
-#include <filesystem>
 
 #include "../math/MathUtils.h"
 #include "../math/SceneFit.h"
 #include "../rendering/GBuffer.h"
 #include "../rendering/d3d12/D3d12_GpuUploadBuffer.h"
 
-#include <vector>
-#include <algorithm>
+#include <cstdio>
+#include <filesystem>
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE prevInstance,
 				   PSTR cmdLine, int showCmd)
@@ -98,8 +93,14 @@ void ObjTexturesDemoApp::LoadIniTextureUvSettings()
 	cfg.TilingRepeatsY = mUvScale.y;
 	cfg.TextureMovementEnabled = mTextureMovementEnabled;
 
-	const std::filesystem::path path =
-		std::filesystem::path(kUvSettingsContentDirectory) / L"texture_uv_settings.ini";
+	// Рядом с .exe: ...\bin\x64\Release\content\texture_uv_settings.ini (как Post-Build в vcxproj).
+	std::filesystem::path path;
+	wchar_t modulePath[MAX_PATH] = {};
+	if (GetModuleFileNameW(nullptr, modulePath, MAX_PATH))
+		path = std::filesystem::path(modulePath).parent_path() / L"content" / L"texture_uv_settings.ini";
+	else
+		path = std::filesystem::current_path() / L"content" / L"texture_uv_settings.ini";
+
 	[[maybe_unused]] const bool ok = TextureUvSettings::LoadIni(path.c_str(), cfg);
 
 #if defined(DEBUG) || defined(_DEBUG)

@@ -6,7 +6,6 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
-#include <istream>
 #include <string>
 
 namespace
