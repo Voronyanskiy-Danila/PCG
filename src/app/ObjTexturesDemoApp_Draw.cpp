@@ -1,75 +1,84 @@
+// =============================================================================
+// ObjTexturesDemoApp_Draw.cpp — запись команд GPU за один кадр Lab 3
+// =============================================================================
+
 #include "ObjTexturesDemoApp.h"
 
 #include "../rendering/GBuffer.h"
 
 #include <DirectXColors.h>
 
+// Точка входа рендера: три последовательных этапа на command list
 void ObjTexturesDemoApp::Draw(const FrameTimer&)
 {
-	StartDeferredFrameRecording();
-	RunDeferredGeometryPass();
-	RunDeferredLightingPass();
-	SubmitCommandListPresentAndFlush();
+	StartDeferredFrameRecording();  // сброс allocator, привязка G-buffer, clear
+	RunDeferredGeometryPass();      // Lab 3: tess + disp + normal → G-buffer
+	RunDeferredLightingPass();      // Lab 2: чтение G-buffer → экран
+	SubmitCommandListPresentAndFlush(); // Execute, Present, sync
 }
 
 void ObjTexturesDemoApp::StartDeferredFrameRecording()
 {
-	ThrowIfFailed(mDirectCmdListAlloc->Reset());
-	ThrowIfFailed(mCommandList->Reset(mDirectCmdListAlloc.Get(), nullptr));
+	ThrowIfFailed(mDirectCmdListAlloc->Reset());           // освободить allocator для новых команд
+	ThrowIfFailed(mCommandList->Reset(mDirectCmdListAlloc.Get(), nullptr)); // начать запись list
 
 	ID3D12GraphicsCommandList* const cmd = mCommandList.Get();
-	cmd->RSSetViewports(1, &mScreenViewport);
-	cmd->RSSetScissorRects(1, &mScissorRect);
+	cmd->RSSetViewports(1, &mScreenViewport);            // размер окна для растеризации
+	cmd->RSSetScissorRects(1, &mScissorRect);              // область отсечения = viewport
 
 	ID3D12DescriptorHeap* heaps[] = {mSrvHeap.Get()};
-	cmd->SetDescriptorHeaps(static_cast<UINT>(_countof(heaps)), heaps);
+	cmd->SetDescriptorHeaps(static_cast<UINT>(_countof(heaps)), heaps); // heap с текстурами и G-buffer SRV
 
-	mRenderer.TransitionGbufferToRenderTarget(cmd);
+	mRenderer.TransitionGbufferToRenderTarget(cmd);        // G-buffer RT: PS-readable → writable
 
 	GBuffer* const gb = mRenderer.GetGBuffer();
-	const D3D12_CPU_DESCRIPTOR_HANDLE dsvGb = gb->DsvCpu();
+	const D3D12_CPU_DESCRIPTOR_HANDLE dsvGb = gb->DsvCpu(); // depth buffer G-buffer
 	D3D12_CPU_DESCRIPTOR_HANDLE rtvMrt[GBuffer::kRtCount]{};
 	for (UINT i = 0u; i < GBuffer::kRtCount; ++i)
-		rtvMrt[i] = gb->RtvCpu(i);
+		rtvMrt[i] = gb->RtvCpu(i);                       // 4 color targets: albedo, normal, pos, mat
 
-	cmd->OMSetRenderTargets(GBuffer::kRtCount, rtvMrt, false, &dsvGb);
+	cmd->OMSetRenderTargets(GBuffer::kRtCount, rtvMrt, false, &dsvGb); // MRT + depth
 
 	static const float kClearRt[4] = {0.f, 0.f, 0.f, 0.f};
 	for (UINT i = 0u; i < GBuffer::kRtCount; ++i)
-		cmd->ClearRenderTargetView(rtvMrt[i], kClearRt, 0, nullptr);
+		cmd->ClearRenderTargetView(rtvMrt[i], kClearRt, 0, nullptr); // чёрный G-buffer
 
-	cmd->ClearDepthStencilView(dsvGb, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0u, 0, nullptr);
+	cmd->ClearDepthStencilView(dsvGb, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0u, 0, nullptr); // z = 1
 }
 
 void ObjTexturesDemoApp::RunDeferredGeometryPass()
 {
 	ID3D12GraphicsCommandList* const cmd = mCommandList.Get();
-	cmd->SetPipelineState(mDeferredGeoPSO.Get());
-	cmd->SetGraphicsRootSignature(mRootSignature.Get());
+
+	const bool wireframe = (mTessDebugMode == 2);          // debug: каркас тесселированных треугольников
+	cmd->SetPipelineState(
+		wireframe ? mDeferredGeoWirePSO.Get() : mDeferredGeoPSO.Get()); // VS+HS+DS+PS tess
+	cmd->SetGraphicsRootSignature(mRootSignature.Get()); // b0=CBV, table=t0,t1,t2
 
 	const D3D12_VERTEX_BUFFER_VIEW vbv = mModelGeo->VertexBufferView();
 	const D3D12_INDEX_BUFFER_VIEW ibv = mModelGeo->IndexBufferView();
-	cmd->IASetVertexBuffers(0u, 1u, &vbv);
+	cmd->IASetVertexBuffers(0u, 1u, &vbv);                 // Pos, Normal, TexC
 	cmd->IASetIndexBuffer(&ibv);
-	cmd->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+	// Каждые 3 индекса = 1 патч; GPU вызовет VS×3, Hull, Tessellator, Domain, PS
+	cmd->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_3_CONTROL_POINT_PATCHLIST);
 
-	const UINT srvIncr = mCbvSrvUavDescriptorSize;
+	const UINT srvIncr = mCbvSrvUavDescriptorSize;       // размер одного descriptor в heap
 	const CD3DX12_GPU_DESCRIPTOR_HANDLE srvBase{mSrvHeap->GetGPUDescriptorHandleForHeapStart()};
 
-	for (const DrawSubmesh& sm : mDrawSubmeshes)
+	for (const DrawSubmesh& sm : mDrawSubmeshes)           // по материалам/кускам меша
 	{
-		ObjectConstants per = mSharedConstants;
-		per.MatKa = sm.Ka;
-		per.MatKd = sm.Kd;
+		ObjectConstants per = mSharedConstants;            // World, EyePosW, tess, DebugMode из Update
+		per.MatKd = sm.Kd;                                 // цвет материала из MTL
 		per.MatKs = sm.Ks;
 		per.MatNs = sm.Ns;
 		per.HasDiffuseTexture = sm.HasDiffuseTexture ? 1.f : 0.f;
+		per.HasNormalTexture = sm.HasNormalTexture ? 1.f : 0.f;
 
-		mObjectCB->CopyData(0u, per);
+		mObjectCB->CopyData(0u, per);                      // CPU → upload buffer → GPU b0
 		cmd->SetGraphicsRootConstantBufferView(0u, mObjectCB->Resource()->GetGPUVirtualAddress());
 
 		CD3DX12_GPU_DESCRIPTOR_HANDLE texH{srvBase};
-		texH.Offset(sm.DiffuseSrvIndex, srvIncr);
+		texH.Offset(sm.MaterialSrvBase, srvIncr);          // base+0 diff, +1 normal, +2 disp
 		cmd->SetGraphicsRootDescriptorTable(1u, texH);
 
 		cmd->DrawIndexedInstanced(sm.IndexCount, 1u, sm.StartIndexLocation, 0, 0u);
@@ -80,36 +89,36 @@ void ObjTexturesDemoApp::RunDeferredLightingPass()
 {
 	ID3D12GraphicsCommandList* const cmd = mCommandList.Get();
 
-	mRenderer.TransitionGbufferToPixelShader(cmd);
+	mRenderer.TransitionGbufferToPixelShader(cmd);         // RT G-buffer → SRV для PS_Light
 
 	CD3DX12_RESOURCE_BARRIER toRt = CD3DX12_RESOURCE_BARRIER::Transition(
 		CurrentBackBuffer(),
 		D3D12_RESOURCE_STATE_PRESENT,
 		D3D12_RESOURCE_STATE_RENDER_TARGET);
-	cmd->ResourceBarrier(1u, &toRt);
+	cmd->ResourceBarrier(1u, &toRt);                       // back buffer можно рисовать
 
 	const D3D12_CPU_DESCRIPTOR_HANDLE bbRtv = CurrentBackBufferView();
-	cmd->OMSetRenderTargets(1u, &bbRtv, false, nullptr);
+	cmd->OMSetRenderTargets(1u, &bbRtv, false, nullptr);   // один RT = swap chain
 	cmd->ClearRenderTargetView(bbRtv, Colors::Black, 0, nullptr);
 
 	mRenderer.UpdateLightingFrameConstants(
 		md3dDevice.Get(),
 		mCameraPos,
-		mSharedConstants.LightDirW,
+		mDirLightW,
 		XMFLOAT3(1.f, 0.f, 0.f),
 		1.0f);
 
-	mRenderer.SetLightingPipeline(cmd);
+	mRenderer.SetLightingPipeline(cmd);                      // deferred_lighting.hlsl
 	cmd->SetGraphicsRootConstantBufferView(0u, mRenderer.LightingCb().Resource()->GetGPUVirtualAddress());
 
 	const UINT srvIncr = mCbvSrvUavDescriptorSize;
 	const CD3DX12_GPU_DESCRIPTOR_HANDLE lightSrv =
 		mRenderer.LightingSrvGpuStart(mSrvHeap.Get(), mDeferredSrvHeapBase, srvIncr);
-	cmd->SetGraphicsRootDescriptorTable(1u, lightSrv);
+	cmd->SetGraphicsRootDescriptorTable(1u, lightSrv);     // SRV: 4×G-buffer + lights
 
 	cmd->IASetVertexBuffers(0u, 0u, nullptr);
 	cmd->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-	cmd->DrawInstanced(3u, 1u, 0u, 0u);
+	cmd->DrawInstanced(3u, 1u, 0u, 0u);                    // fullscreen triangle
 
 	CD3DX12_RESOURCE_BARRIER toPresent = CD3DX12_RESOURCE_BARRIER::Transition(
 		CurrentBackBuffer(),
@@ -120,12 +129,12 @@ void ObjTexturesDemoApp::RunDeferredLightingPass()
 
 void ObjTexturesDemoApp::SubmitCommandListPresentAndFlush()
 {
-	ThrowIfFailed(mCommandList->Close());
+	ThrowIfFailed(mCommandList->Close());                  // закончить запись команд
 
 	ID3D12CommandList* lists[] = {mCommandList.Get()};
-	mCommandQueue->ExecuteCommandLists(static_cast<UINT>(_countof(lists)), lists);
+	mCommandQueue->ExecuteCommandLists(static_cast<UINT>(_countof(lists)), lists); // GPU старт
 
-	ThrowIfFailed(mSwapChain->Present(0u, 0u));
+	ThrowIfFailed(mSwapChain->Present(0u, 0u));            // показать кадр
 	mCurrBackBuffer = (mCurrBackBuffer + 1) % SwapChainBufferCount;
-	FlushCommandQueue();
+	FlushCommandQueue();                                   // дождаться GPU (учебный пример)
 }

@@ -1,3 +1,12 @@
+// =============================================================================
+// RenderingSystem.h — G-buffer, компиляция шейдеров, deferred lighting (Lab 2+3)
+// =============================================================================
+//
+// Lab 3: хранит bytecode deferred_tessellation.hlsl (VS, HullHS, DomainDS, PS).
+//        Приложение собирает PSO tess из Tess*ByteCode().
+// Lab 2: G-buffer, deferred_lighting.hlsl, SRV для lighting pass.
+// =============================================================================
+
 #pragma once
 
 #include "GBuffer.h"
@@ -32,8 +41,11 @@ public:
 	GBuffer* GetGBuffer() { return &m_gbuffer; }
 	const GBuffer* GetGBuffer() const { return &m_gbuffer; }
 
-	Microsoft::WRL::ComPtr<ID3DBlob> GeomVsByteCode() const { return m_geoVsBc; }
-	Microsoft::WRL::ComPtr<ID3DBlob> GeomPsByteCode() const { return m_geoPsBc; }
+	// Bytecode Lab 3 — entry points в deferred_tessellation.hlsl
+	Microsoft::WRL::ComPtr<ID3DBlob> TessVsByteCode() const { return m_tessVsBc; }
+	Microsoft::WRL::ComPtr<ID3DBlob> TessHsByteCode() const { return m_tessHsBc; }
+	Microsoft::WRL::ComPtr<ID3DBlob> TessDsByteCode() const { return m_tessDsBc; }
+	Microsoft::WRL::ComPtr<ID3DBlob> TessPsByteCode() const { return m_tessPsBc; }
 
 	void SetLights(const GpuLight* lights, UINT count);
 	void UpdateLightingFrameConstants(
@@ -45,9 +57,6 @@ public:
 
 	void TransitionGbufferToRenderTarget(ID3D12GraphicsCommandList* cmd);
 	void TransitionGbufferToPixelShader(ID3D12GraphicsCommandList* cmd);
-
-	ID3D12PipelineState* LightingPSO() const { return m_psoLighting.Get(); }
-	ID3D12RootSignature* LightingRootSignature() const { return m_rsLighting.Get(); }
 
 	void SetLightingPipeline(ID3D12GraphicsCommandList* cmd);
 	CD3DX12_GPU_DESCRIPTOR_HANDLE LightingSrvGpuStart(
@@ -63,8 +72,10 @@ private:
 
 	GBuffer m_gbuffer{};
 
-	Microsoft::WRL::ComPtr<ID3DBlob> m_geoVsBc;
-	Microsoft::WRL::ComPtr<ID3DBlob> m_geoPsBc;
+	Microsoft::WRL::ComPtr<ID3DBlob> m_tessVsBc;
+	Microsoft::WRL::ComPtr<ID3DBlob> m_tessHsBc;
+	Microsoft::WRL::ComPtr<ID3DBlob> m_tessDsBc;
+	Microsoft::WRL::ComPtr<ID3DBlob> m_tessPsBc;
 	Microsoft::WRL::ComPtr<ID3DBlob> m_lightVsBc;
 	Microsoft::WRL::ComPtr<ID3DBlob> m_lightPsBc;
 

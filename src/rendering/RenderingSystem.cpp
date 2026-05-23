@@ -1,3 +1,11 @@
+// =============================================================================
+// RenderingSystem.cpp
+// =============================================================================
+// Initialize: компилирует deferred_tessellation.hlsl (4 профиля) и
+//             deferred_lighting.hlsl (2 профиля).
+// CreateDeferredSrvs: SRV на RT G-buffer + structured buffer огней для PS_Light.
+// =============================================================================
+
 #include "RenderingSystem.h"
 #include "../rendering/d3d12/D3d12_RenderHelpers.h"
 #include <algorithm>
@@ -47,10 +55,16 @@ void RenderingSystem::Initialize(ID3D12Device* device, DXGI_FORMAT backBufferFor
 {
 	m_lightingRtFormat = backBufferFormat;
 
-	m_geoVsBc = Dx12Utils::CompileShader(
-		L"content/shaders/deferred_gbuffer.hlsl", nullptr, "VS", "vs_5_0");
-	m_geoPsBc = Dx12Utils::CompileShader(
-		L"content/shaders/deferred_gbuffer.hlsl", nullptr, "PS", "ps_5_0");
+	// Lab 3 — геометрия: tessellation + displacement + G-buffer MRT
+	m_tessVsBc = Dx12Utils::CompileShader(
+		L"content/shaders/deferred_tessellation.hlsl", nullptr, "VS", "vs_5_0");
+	m_tessHsBc = Dx12Utils::CompileShader(
+		L"content/shaders/deferred_tessellation.hlsl", nullptr, "HullHS", "hs_5_0");
+	m_tessDsBc = Dx12Utils::CompileShader(
+		L"content/shaders/deferred_tessellation.hlsl", nullptr, "DomainDS", "ds_5_0");
+	m_tessPsBc = Dx12Utils::CompileShader(
+		L"content/shaders/deferred_tessellation.hlsl", nullptr, "PS", "ps_5_0");
+
 
 	m_lightVsBc = Dx12Utils::CompileShader(
 		L"content/shaders/deferred_lighting.hlsl", nullptr, "VS_Light", "vs_5_0");

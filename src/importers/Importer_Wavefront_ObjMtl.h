@@ -1,3 +1,13 @@
+// =============================================================================
+// Importer_Wavefront_ObjMtl.h — загрузка OBJ/MTL для Lab 3
+// =============================================================================
+//
+// MtlMaterial хранит пути к трём картам, нужным шейдеру tessellation:
+//   DiffuseTexturePath      — map_Kd  → gDiffuseMap (t0)
+//   NormalTexturePath       — map_Bump / norm → gNormalMap (t1)
+//   DisplacementTexturePath — map_disp → gDispMap (t2), сдвиг в DomainDS
+// =============================================================================
+
 #pragma once
 
 #include <DirectXMath.h>
@@ -13,7 +23,9 @@ struct MtlMaterial
 	DirectX::XMFLOAT3 Kd = {0.8f, 0.8f, 0.8f};
 	DirectX::XMFLOAT3 Ks = {0.2f, 0.2f, 0.2f};
 	float Ns = 32.0f;
-	std::wstring DiffuseTexturePath; // full path; empty = no texture
+	std::wstring DiffuseTexturePath;
+	std::wstring NormalTexturePath;
+	std::wstring DisplacementTexturePath;
 };
 
 struct ObjSubmeshRange

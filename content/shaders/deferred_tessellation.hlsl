@@ -1,0 +1,291 @@
+// =============================================================================
+// deferred_tessellation.hlsl — геометрический проход Lab 3 (deferred G-buffer)
+// =============================================================================
+//
+// Пайплайн DirectX 12 (один draw = один треугольник OBJ как патч из 3 точек):
+//
+//   IA: PATCHLIST (3 control points)
+//        ↓
+//   VS  — подготовка контрольных точек для hull
+//        ↓
+//   HS  — PatchConstantHS: факторы тесселяции (LOD по камере)
+//       — HullHS: передаёт вершины патча без изменений
+//        ↓  [фиксированный tessellator GPU режет рёбра по факторам]
+//   DS  — интерполяция внутри патча + displacement по текстуре
+//        ↓
+//   PS  — albedo, normal map → запись в G-buffer (4 RT)
+//        ↓
+//   deferred_lighting.hlsl читает G-buffer и рисует освещение на экран
+//
+// Текстуры материала (root signature, таблица SRV):
+//   t0 — diffuse (map_Kd)
+//   t1 — normal map (map_Bump / norm)
+//   t2 — displacement (map_disp)
+//
+// DebugMode (клавиша T в приложении):
+//   0 — нормальный рендер
+//   1 — heatmap плотности tess
+//   2 — wireframe (переключается PSO на CPU, здесь только цвет)
+//   3 — tess без displacement (сравнение формы)
+// =============================================================================
+
+// --- Constant buffer: те же поля, что struct ObjectConstants в ObjTexturesDemoApp.h ---
+cbuffer ObjectCB : register(b0)
+{
+	float4x4 gWorld;              // объект → мир
+	float4x4 gWorldInvTranspose;  // для корректного преобразования нормалей
+	float4x4 gWorldViewProj;      // объект → clip (после displacement в DS)
+
+	float3   gEyePosW;          // позиция камеры (мир) — для LOD tess
+	float    _pad0;
+
+	float3   gMatKd;
+	float    gHasDiffuseTexture;  // 1 — сэмплировать gDiffuseMap
+
+	float3   gMatKs;
+	float    gMatNs;              // shininess → roughness в G-buffer
+
+	float2   gUvScale;            // масштаб UV (сейчас 1,1 с CPU)
+	float2   _pad1;
+
+	// Lab 3: тесселяция и displacement
+	float    gDispScale;          // амплитуда сдвига по height map (метры в лок. пространстве)
+	float    gMinTess;            // мин. фактор tess (далеко от камеры)
+	float    gMaxTess;            // макс. фактор tess (близко)
+	float    gTessNear;           // дистанция, на которой tess = gMaxTess
+
+	float    gTessFar;            // дистанция, на которой tess = gMinTess
+	float    gHasNormalTexture;   // 1 — perturb normal из gNormalMap
+	float    gDebugMode;          // см. константы ниже
+	float    _pad2;
+};
+
+static const float kDbgTessHeatmap = 1.f;  // режим визуализации LOD
+static const float kDbgWireframe = 2.f;    // цвет под wireframe PSO
+static const float kDbgTessNoDisp = 3.f;   // tess есть, displacement выключен
+
+Texture2D    gDiffuseMap : register(t0);
+Texture2D    gNormalMap   : register(t1);
+Texture2D    gDispMap     : register(t2);
+SamplerState gSamLinearWrap : register(s0);
+
+// Вход из vertex buffer (layout совпадает с struct Vertex в C++)
+struct VSInput
+{
+	float3 PosL    : POSITION;
+	float3 NormalL : NORMAL;
+	float2 Tex     : TEXCOORD0;
+};
+
+// Выход VS = одна контрольная точка патча для hull/domain
+struct HsControlPoint
+{
+	float3 PosL     : POSITION;
+	float3 NormalL  : NORMAL;
+	float3 TangentL : TANGENT;   // для TBN и normal map в PS
+	float2 Tex      : TEXCOORD0;
+};
+
+// Факторы тесселяции: 3 рёбра треугольника + 1 inside (для tri domain)
+struct HS_CONSTANTS
+{
+	float Edge[3] : SV_TessFactor;
+	float Inside  : SV_InsideTessFactor;
+};
+
+// Строит касательную по нормали (в OBJ часто нет tangent — нужен для normal map)
+float3 TangentFromNormal(float3 n)
+{
+	float3 up = (abs(n.y) > 0.999f) ? float3(1.f, 0.f, 0.f) : float3(0.f, 1.f, 0.f);
+	float3 t = cross(up, n);
+	return (dot(t, t) > 1e-8f) ? normalize(t) : float3(1.f, 0.f, 0.f);
+}
+
+// -----------------------------------------------------------------------------
+// VERTEX SHADER (VS)
+// Вызывается 1 раз на каждую вершину исходного меша (контрольные точки патча).
+// Не двигает геометрию — только упаковывает атрибуты для hull.
+// -----------------------------------------------------------------------------
+HsControlPoint VS(VSInput vin)
+{
+	HsControlPoint o;
+	o.PosL = vin.PosL;
+	o.NormalL = normalize(vin.NormalL);
+	o.TangentL = TangentFromNormal(o.NormalL);
+	o.Tex = vin.Tex * gUvScale;
+	return o;
+}
+
+// LOD: линейная интерполяция tess factor между gMinTess и gMaxTess по расстоянию до gEyePosW
+float TessFactorFromWorldPos(float3 posW)
+{
+	float d = distance(posW, gEyePosW);
+	float t = saturate((gTessFar - d) / max(gTessFar - gTessNear, 0.001));
+	return lerp(gMinTess, gMaxTess, t);
+}
+
+// -----------------------------------------------------------------------------
+// HULL SHADER — constant function (PatchConstantHS)
+// 1 раз на патч (треугольник). Задаёт, сколько сегментов на ребро/внутри.
+// Центр патча в мировых координатах → одинаковый tess на все 4 фактора
+// (меньше полос/швов на плоских сетках, чем при разных edge factors).
+// -----------------------------------------------------------------------------
+HS_CONSTANTS PatchConstantHS(InputPatch<HsControlPoint, 3> patch)
+{
+	HS_CONSTANTS hs;                                     // выход: 3 edge + 1 inside factor
+	float3 c0 = mul(float4(patch[0].PosL, 1.f), gWorld).xyz; // угол 0 патча в мире
+	float3 c1 = mul(float4(patch[1].PosL, 1.f), gWorld).xyz; // угол 1
+	float3 c2 = mul(float4(patch[2].PosL, 1.f), gWorld).xyz; // угол 2
+	float3 center = (c0 + c1 + c2) / 3.f;                // центр треугольника в мире
+
+	float tess = TessFactorFromWorldPos(center);           // LOD: ближе камера → больше число
+	hs.Edge[0] = tess;                                   // сколько сегментов на ребро 0-1
+	hs.Edge[1] = tess;                                   // ребро 1-2
+	hs.Edge[2] = tess;                                   // ребро 2-0
+	hs.Inside = tess;                                    // плотность внутри (tri domain)
+	return hs;                                           // дальше — фикс. tessellator GPU (не HLSL)
+}
+
+// -----------------------------------------------------------------------------
+// HULL SHADER — control points (HullHS)
+// Pass-through: контрольные точки не смещаются на hull (смещение только в DS).
+// Атрибуты domain: tri, integer partitioning, CW, 3 CP, max tess 64.
+// -----------------------------------------------------------------------------
+[domain("tri")]
+[partitioning("integer")]
+[outputtopology("triangle_cw")]
+[outputcontrolpoints(3)]
+[patchconstantfunc("PatchConstantHS")]
+[maxtessfactor(64.0)]
+HsControlPoint HullHS(InputPatch<HsControlPoint, 3> patch, uint i : SV_OutputControlPointID)
+{
+	return patch[i];                                     // hull НЕ сдвигает точки; i = 0,1,2
+}
+
+// Выход domain shader → вход pixel shader
+struct DSOutput
+{
+	float4 PosH     : SV_POSITION;
+	float3 PosW     : TEXCOORD0;
+	float3 NormalW  : TEXCOORD1;
+	float3 TangentW : TEXCOORD2;
+	float2 Tex      : TEXCOORD3;
+	float  TessLevel : TEXCOORD4;  // для debug heatmap
+};
+
+// -----------------------------------------------------------------------------
+// DOMAIN SHADER (DS)
+// Вызывается для каждой точки, которую tessellator создал внутри патча.
+// bary = барицентрические координаты (u,v,w), u+v+w=1.
+//
+// 1) Линейная интерполяция pos/normal/tangent/UV по контрольным точкам
+// 2) Displacement: высота из gDispMap, сдвиг вдоль nL (Lab 3)
+// 3) Преобразование в мир и clip
+// -----------------------------------------------------------------------------
+[domain("tri")]
+DSOutput DomainDS(
+	HS_CONSTANTS hs,
+	const OutputPatch<HsControlPoint, 3> patch,
+	float3 bary : SV_DomainLocation)
+{
+	float u = bary.x;                                    // барицентрические веса (сумма = 1)
+	float v = bary.y;                                    // от tessellator: где точка внутри патча
+	float w = bary.z;
+
+	// Шаг 1 domain: интерполяция атрибутов на ПЛОСКОМ (или сглаженном) треугольнике
+	float3 posL = patch[0].PosL * u + patch[1].PosL * v + patch[2].PosL * w;
+	float3 nL = normalize(patch[0].NormalL * u + patch[1].NormalL * v + patch[2].NormalL * w);
+	float3 tL = normalize(patch[0].TangentL * u + patch[1].TangentL * v + patch[2].TangentL * w);
+	float2 tex = patch[0].Tex * u + patch[1].Tex * v + patch[2].Tex * w;
+
+	// Шаг 2 domain: ВЫСОТА из displacement-текстуры (map_disp), не из вершины OBJ
+	float h = gDispMap.SampleLevel(gSamLinearWrap, tex, 0).r; // 0..1, 0.5 = «ноль» высоты
+	float dispOff = (h - 0.5f) * gDispScale;            // метры вдоль nL; масштаб с CPU
+	if (abs(gDebugMode - kDbgTessNoDisp) > 0.5f)
+		posL += nL * dispOff;                              // сдвиг вершины = геометрический рельеф
+
+	// Средний tess factor патча (для отладочной раскраски в PS)
+	float tessLevel = (hs.Edge[0] + hs.Edge[1] + hs.Edge[2] + hs.Inside) * 0.25f;
+
+	float4 posW4 = mul(float4(posL, 1.f), gWorld);
+	float3 nW = normalize(mul(float4(nL, 0.f), gWorldInvTranspose).xyz);
+	float3 tW = normalize(mul(float4(tL, 0.f), gWorld).xyz);
+	// Gram-Schmidt: касательная ⊥ нормали в мире (для стабильного TBN)
+	tW = normalize(tW - dot(tW, nW) * nW);
+
+	DSOutput o;
+	o.PosW = posW4.xyz;
+	o.NormalW = nW;
+	o.TangentW = tW;
+	o.PosH = mul(float4(posL, 1.f), gWorldViewProj);
+	o.Tex = tex;
+	o.TessLevel = tessLevel;
+	return o;
+}
+
+// Псевдоцвет для режима debug 1: синий → зелёный → красный = рост tess factor
+float3 TessHeatmap(float t)
+{
+	t = saturate(t);
+	float3 c = lerp(float3(0.1, 0.2, 0.9), float3(0.1, 0.95, 0.35), t);
+	return lerp(c, float3(0.95, 0.25, 0.1), smoothstep(0.55, 1.f, t));
+}
+
+// Формат G-buffer (совпадает с deferred_lighting.hlsl)
+struct GBufferPack
+{
+	float4 AlbedoA    : SV_Target0;
+	float4 NormalW    : SV_Target1;
+	float4 PosWorld   : SV_Target2;
+	float4 KsRoughPad : SV_Target3;  // rgb = Ks, a = roughness
+};
+
+// Perturbation: tangent space normal map → мировая нормаль (T, B, N)
+float3 NormalFromMap(float3 Ngeom, float3 Tgeom, float3 nMapSample)
+{
+	float3 nTex = nMapSample * 2.f - 1.f;       // [0,1] → [-1,1]
+	float3 B = cross(Ngeom, Tgeom);
+	return normalize(nTex.x * Tgeom + nTex.y * B + nTex.z * Ngeom);
+}
+
+// -----------------------------------------------------------------------------
+// PIXEL SHADER (PS)
+// На каждый пиксель треугольника после tess + displacement:
+//   - normal map (если есть) → RT1
+//   - diffuse → RT0
+//   - позиция и материал для deferred lighting
+// Normal map не двигает вершины — только направление света в следующем проходе.
+// -----------------------------------------------------------------------------
+GBufferPack PS(DSOutput pin)
+{
+	GBufferPack o;
+
+	// Шаг PS: normal map ПОСЛЕ displacement — меняет только освещение, не posL
+	float3 Ngeom = normalize(pin.NormalW);               // нормаль от смещённой поверхности (мир)
+	float3 Tgeom = pin.TangentW;                         // для базиса TBN
+	float3 nMap = gNormalMap.Sample(gSamLinearWrap, pin.Tex).rgb; // tangent-space normal
+	float3 N = (gHasNormalTexture > 0.5f) ? NormalFromMap(Ngeom, Tgeom, nMap) : Ngeom;
+
+	float3 alb;
+	if (gDebugMode > kDbgTessHeatmap - 0.5f && gDebugMode < kDbgTessHeatmap + 0.5f)
+		alb = TessHeatmap(pin.TessLevel / max(gMaxTess, 1.f));
+	else if (gDebugMode > kDbgWireframe - 0.5f && gDebugMode < kDbgWireframe + 0.5f)
+		alb = float3(0.15, 0.85, 0.35);
+	else if (gDebugMode > kDbgTessNoDisp - 0.5f && gDebugMode < kDbgTessNoDisp + 0.5f)
+	{
+		// Приглушённый albedo, чтобы видеть «гладкий» tess без рельефа disp
+		float3 texRgb = gDiffuseMap.Sample(gSamLinearWrap, pin.Tex).rgb;
+		alb = gMatKd * lerp(float3(1, 1, 1), texRgb, gHasDiffuseTexture) * 0.65f;
+	}
+	else
+	{
+		float3 texRgb = gDiffuseMap.Sample(gSamLinearWrap, pin.Tex).rgb;
+		alb = gMatKd * lerp(float3(1, 1, 1), texRgb, gHasDiffuseTexture);
+	}
+
+	o.AlbedoA = float4(alb, 1.f);
+	o.NormalW = float4(N, 0.f);
+	o.PosWorld = float4(pin.PosW, 1.f);
+	o.KsRoughPad = float4(gMatKs, saturate(gMatNs / 128.f));
+	return o;
+}

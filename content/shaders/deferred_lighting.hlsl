@@ -1,4 +1,13 @@
-// Fullscreen deferred lighting + Reinhard tone map.
+// =============================================================================
+// deferred_lighting.hlsl — второй проход deferred (Lab 2, без изменений в Lab 3)
+// =============================================================================
+//
+// После deferred_tessellation.hlsl в G-buffer уже лежат:
+//   RT0 albedo, RT1 normal (с normal map), RT2 world pos, RT3 Ks/roughness.
+// PS_Light сэмплирует их и считает точечный/прожекторный свет + tone map.
+// Normal map влияет здесь только через gBufNormal (записан в геом. проходе).
+// =============================================================================
+
 Texture2D    gBufAlbedo   : register(t0);
 Texture2D    gBufNormal   : register(t1);
 Texture2D    gBufPosition : register(t2);

@@ -1,12 +1,21 @@
-#include "ObjTexturesDemoApp.h"
+// =============================================================================
+// ObjTexturesDemoApp.cpp — инициализация Lab 3, PSO tessellation, Update, ввод
+// =============================================================================
+//
+// Initialize: LoadModelAndTextures → root sig (3 SRV) → RenderingSystem (compile
+//   deferred_tessellation.hlsl) → BuildDeferredGeometryPipeline (VS+HS+DS+PS, PATCH).
+// Update: камера, матрицы, EyePosW + DebugMode в mSharedConstants.
+// MsgProc: T — mTessDebugMode 0..3 (heatmap / wire / no disp).
+// =============================================================================
 
-#include "TextureUvSettings.h"
+#include "ObjTexturesDemoApp.h"
 
 #include "../math/MathUtils.h"
 #include "../math/SceneFit.h"
 #include "../rendering/GBuffer.h"
 #include "../rendering/d3d12/D3d12_GpuUploadBuffer.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <filesystem>
 
@@ -48,7 +57,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE prevInstance,
 ObjTexturesDemoApp::ObjTexturesDemoApp(HINSTANCE hInstance)
 : D3d12AppBase(hInstance)
 {
-	mMainWndCaption = L"Sponza — D3D12";
+	mMainWndCaption = L"Lab3 — Rock 07 (Poly Haven)";
 }
 
 ObjTexturesDemoApp::~ObjTexturesDemoApp()
@@ -59,8 +68,6 @@ bool ObjTexturesDemoApp::Initialize()
 {
 	if (!D3d12AppBase::Initialize())
 		return false;
-
-	LoadIniTextureUvSettings();
 
 	ThrowIfFailed(mCommandList->Reset(mDirectCmdListAlloc.Get(), nullptr));
 
@@ -74,6 +81,7 @@ bool ObjTexturesDemoApp::Initialize()
 	RefreshDeferredSrvs();
 	BuildDeferredGeometryPipeline();
 	SetupSceneLights();
+	UpdateWindowCaption();
 
 	ThrowIfFailed(mCommandList->Close());
 	ID3D12CommandList* cmdsLists[] = {mCommandList.Get()};
@@ -84,41 +92,6 @@ bool ObjTexturesDemoApp::Initialize()
 	mTextureUploads.clear();
 
 	return true;
-}
-
-void ObjTexturesDemoApp::LoadIniTextureUvSettings()
-{
-	TextureUvSettings cfg{};
-	cfg.TilingRepeatsX = mUvScale.x;
-	cfg.TilingRepeatsY = mUvScale.y;
-	cfg.TextureMovementEnabled = mTextureMovementEnabled;
-
-	// Рядом с .exe: ...\bin\x64\Release\content\texture_uv_settings.ini (как Post-Build в vcxproj).
-	std::filesystem::path path;
-	wchar_t modulePath[MAX_PATH] = {};
-	if (GetModuleFileNameW(nullptr, modulePath, MAX_PATH))
-		path = std::filesystem::path(modulePath).parent_path() / L"content" / L"texture_uv_settings.ini";
-	else
-		path = std::filesystem::current_path() / L"content" / L"texture_uv_settings.ini";
-
-	[[maybe_unused]] const bool ok = TextureUvSettings::LoadIni(path.c_str(), cfg);
-
-#if defined(DEBUG) || defined(_DEBUG)
-	wchar_t buf[768];
-	swprintf_s(
-		buf,
-		L"[texture_uv_settings.ini]\n path=%s\n ok=%d  tiling=(%.4f, %.4f)  movement=%d\n",
-		path.c_str(),
-		ok ? 1 : 0,
-		cfg.TilingRepeatsX,
-		cfg.TilingRepeatsY,
-		cfg.TextureMovementEnabled ? 1 : 0);
-	OutputDebugStringW(buf);
-#endif
-
-	mUvScale.x = cfg.TilingRepeatsX;
-	mUvScale.y = cfg.TilingRepeatsY;
-	mTextureMovementEnabled = cfg.TextureMovementEnabled;
 }
 
 XMVECTOR ObjTexturesDemoApp::CameraForwardNormalized() const
@@ -143,18 +116,19 @@ void ObjTexturesDemoApp::OnResize()
 		RefreshDeferredSrvs();
 }
 
+// Каждый кадр: камера + матрицы + ObjectConstants → GPU (hull LOD, domain disp, PS debug)
 void ObjTexturesDemoApp::Update(const FrameTimer& gt)
 {
-	const float dt = gt.DeltaTime();
-	const float speed = mCameraSpeed * dt;
+	const float dt = gt.DeltaTime();                       // время кадра, сек
+	const float speed = mCameraSpeed * dt;                 // метры за кадр
 
-	XMVECTOR forward = CameraForwardNormalized();
+	XMVECTOR forward = CameraForwardNormalized();          // куда смотрит камера
 
 	static const XMVECTOR kWorldUp = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
-	XMVECTOR right = XMVector3Cross(kWorldUp, forward);
+	XMVECTOR right = XMVector3Cross(kWorldUp, forward);    // вектор «вправо» для A/D
 	const float rightLenSq = XMVectorGetX(XMVector3LengthSq(right));
 	if (rightLenSq < 1e-8f)
-		right = XMVectorSet(1.0f, 0.0f, 0.0f, 0.0f);
+		right = XMVectorSet(1.0f, 0.0f, 0.0f, 0.0f);      // защита при взгляде вверх/вниз
 	else
 		right = XMVector3Normalize(right);
 
@@ -173,36 +147,26 @@ void ObjTexturesDemoApp::Update(const FrameTimer& gt)
 	if (mKeyDescend)
 		pos = XMVectorSubtract(pos, XMVectorScale(kWorldUp, speed));
 
-	XMStoreFloat3(&mCameraPos, pos);
+	XMStoreFloat3(&mCameraPos, pos);                       // новая позиция → gEyePosW в шейдере
 
 	const XMVECTOR lookAt = XMVectorAdd(pos, forward);
 	const XMMATRIX view = XMMatrixLookAtLH(pos, lookAt, kWorldUp);
 	XMStoreFloat4x4(&mView, view);
 
-	XMMATRIX world = XMLoadFloat4x4(&mWorld);
+	XMMATRIX world = XMLoadFloat4x4(&mWorld);              // из SceneFit (масштаб камня)
 	XMMATRIX proj = XMLoadFloat4x4(&mProj);
-	XMMATRIX wvp = world * view * proj;
+	XMMATRIX wvp = world * view * proj;                    // для PosH в DomainDS
 
 	ObjectConstants obj{};
-
-	// Матрицы: в HLSL row-vector * matrix (mul(v, M)) — передаём транспонированные.
-	XMStoreFloat4x4(&obj.World, XMMatrixTranspose(world));
+	XMStoreFloat4x4(&obj.World, XMMatrixTranspose(world)); // HLSL: mul(v, matrix)
 	XMStoreFloat4x4(&obj.WorldInvTranspose, XMMatrixTranspose(MathUtils::InverseTranspose(world)));
 	XMStoreFloat4x4(&obj.WorldViewProj, XMMatrixTranspose(wvp));
-
-	obj.EyePosW = mCameraPos;
-	obj.SpecPower = 64.0f;
-
-	obj.LightDirW = XMFLOAT3(0.577f, -0.577f, 0.577f);
-	obj.LightColor = XMFLOAT3(1.0f, 1.0f, 1.0f);
-	obj.AmbientK = 0.15f;
-
-	obj.UvAnimParams =
-		XMFLOAT4(gt.TotalTime(), mTextureMovementEnabled ? 1.f : 0.f, 0.f, 0.f);
-	obj.UvScale = mUvScale;
-	obj.UvScroll = mUvScroll;
-
-	mSharedConstants = obj;
+	obj.EyePosW = mCameraPos;                              // TessFactorFromWorldPos в Hull
+	obj.UvScale = {1.0f, 1.0f};
+	obj.DebugMode = static_cast<float>(mTessDebugMode);    // 0..3, клавиша T
+	// DispScale, MinTess, MaxTess, TessNear, TessFar — defaults из struct в .h
+	(void)gt;
+	mSharedConstants = obj;                                // копируется в Draw per submesh
 
 	UpdateCameraAttachedSpotLight();
 	mRenderer.SetLights(mSceneLights.data(), static_cast<UINT>(mSceneLights.size()));
@@ -265,14 +229,15 @@ void ObjTexturesDemoApp::BuildConstantBuffers()
 	mObjectCB = std::make_unique<GpuUploadBuffer<ObjectConstants>>(md3dDevice.Get(), 1, true);
 }
 
+// Root signature геометрического прохода Lab 3: b0 = ObjectCB, t0..t2 = diffuse/normal/disp
 void ObjTexturesDemoApp::BuildRootSignature()
 {
 	CD3DX12_DESCRIPTOR_RANGE srvTable{};
-	srvTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0);
+	srvTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 3, 0);
 
 	CD3DX12_ROOT_PARAMETER slotRootParameter[2]{};
 	slotRootParameter[0].InitAsConstantBufferView(0, 0, D3D12_SHADER_VISIBILITY_ALL);
-	slotRootParameter[1].InitAsDescriptorTable(1, &srvTable, D3D12_SHADER_VISIBILITY_PIXEL);
+	slotRootParameter[1].InitAsDescriptorTable(1, &srvTable, D3D12_SHADER_VISIBILITY_ALL);
 
 	CD3DX12_STATIC_SAMPLER_DESC samplerDesc(
 		0,
@@ -286,7 +251,7 @@ void ObjTexturesDemoApp::BuildRootSignature()
 		D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE,
 		0.f,
 		D3D12_FLOAT32_MAX,
-		D3D12_SHADER_VISIBILITY_PIXEL,
+		D3D12_SHADER_VISIBILITY_ALL,
 		0);
 
 	CD3DX12_ROOT_SIGNATURE_DESC rootSigDesc(
@@ -389,40 +354,39 @@ void ObjTexturesDemoApp::BuildModelGeometry(const ObjMeshData& data)
 	mModelGeo->BaseVertexLocation = 0;
 }
 
-void ObjTexturesDemoApp::FitWorldAndCameraToMesh(const ObjMeshData& data)
-{
-	const SceneFitResult fit = ComputeSceneFit(data);
-	mWorld = fit.World;
-	mCameraPos = fit.CameraPos;
-	mYaw = fit.CameraYaw;
-	mPitch = fit.CameraPitch;
-}
-
+// PSO с hull/domain — заменяет Lab2 deferred_gbuffer.hlsl (простой VS+PS)
 void ObjTexturesDemoApp::BuildDeferredGeometryPipeline()
 {
 	D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc{};
 	psoDesc.InputLayout = {mInputLayout.data(), (UINT)mInputLayout.size()};
 	psoDesc.pRootSignature = mRootSignature.Get();
 
-	if (!mRenderer.GeomVsByteCode() || !mRenderer.GeomPsByteCode())
+	if (!mRenderer.TessVsByteCode() || !mRenderer.TessHsByteCode() || !mRenderer.TessDsByteCode() ||
+		!mRenderer.TessPsByteCode())
 		throw DxException(E_FAIL,
-			L"Deferred geometry shaders are not initialized.",
+			L"Tessellation geometry shaders are not initialized.",
 			AnsiToWString(__FILE__),
 			__LINE__);
 
 	psoDesc.VS = {
-		reinterpret_cast<BYTE*>(mRenderer.GeomVsByteCode()->GetBufferPointer()),
-		mRenderer.GeomVsByteCode()->GetBufferSize()};
+		reinterpret_cast<BYTE*>(mRenderer.TessVsByteCode()->GetBufferPointer()),
+		mRenderer.TessVsByteCode()->GetBufferSize()};
+	psoDesc.HS = {
+		reinterpret_cast<BYTE*>(mRenderer.TessHsByteCode()->GetBufferPointer()),
+		mRenderer.TessHsByteCode()->GetBufferSize()};
+	psoDesc.DS = {
+		reinterpret_cast<BYTE*>(mRenderer.TessDsByteCode()->GetBufferPointer()),
+		mRenderer.TessDsByteCode()->GetBufferSize()};
 	psoDesc.PS = {
-		reinterpret_cast<BYTE*>(mRenderer.GeomPsByteCode()->GetBufferPointer()),
-		mRenderer.GeomPsByteCode()->GetBufferSize()};
+		reinterpret_cast<BYTE*>(mRenderer.TessPsByteCode()->GetBufferPointer()),
+		mRenderer.TessPsByteCode()->GetBufferSize()};
 
 	psoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
 	psoDesc.RasterizerState.FrontCounterClockwise = FALSE;
 	psoDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
 	psoDesc.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT);
 	psoDesc.SampleMask = UINT_MAX;
-	psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+	psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_PATCH;
 	psoDesc.NumRenderTargets = GBuffer::kRtCount;
 	for (UINT i = 0; i < GBuffer::kRtCount; ++i)
 		psoDesc.RTVFormats[i] = GBuffer::RtFormat(i);
@@ -432,6 +396,26 @@ void ObjTexturesDemoApp::BuildDeferredGeometryPipeline()
 	psoDesc.SampleDesc.Quality = 0;
 	psoDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
 	ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&mDeferredGeoPSO)));
+
+	CD3DX12_RASTERIZER_DESC wireRs(D3D12_DEFAULT);
+	wireRs.FillMode = D3D12_FILL_MODE_WIREFRAME;
+	wireRs.CullMode = D3D12_CULL_MODE_NONE;
+	psoDesc.RasterizerState = wireRs;
+	ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&mDeferredGeoWirePSO)));
+}
+
+void ObjTexturesDemoApp::UpdateWindowCaption()
+{
+	static const wchar_t* kModeNames[] = {
+		L"Normal (tess + displacement + normal)",
+		L"Tess LOD heatmap [T]",
+		L"Tess wireframe [T]",
+		L"Tess only, no displacement [T]",
+	};
+	const int idx = (std::min)(mTessDebugMode, 3);
+	wchar_t cap[256];
+	swprintf_s(cap, L"Lab3 — %s", kModeNames[idx]);
+	SetWindowText(mhMainWnd, cap);
 }
 
 void ObjTexturesDemoApp::RefreshDeferredSrvs()
@@ -447,17 +431,16 @@ void ObjTexturesDemoApp::RefreshDeferredSrvs()
 
 void ObjTexturesDemoApp::SetupSceneLights()
 {
-	// Зелёный point в центре сцены (центр спонзы после FitWorld ~ (0,0,0)); spot с камеры — UpdateCameraAttachedSpotLight.
 	mSceneLights.clear();
 
 	const float keyLightIntensity = 5.25f;
 
 	GpuLight pt{};
 	pt.Type = kLightTypePoint;
-	pt.Position = XMFLOAT3(0.f, 0.f, 0.f);
-	pt.Range = 36.f;
-	pt.Color = XMFLOAT3(0.12f, 1.f, 0.32f);
-	pt.Intensity = keyLightIntensity * 0.5f;
+	pt.Position = XMFLOAT3(0.f, 12.f, 0.f);
+	pt.Range = 55.f;
+	pt.Color = XMFLOAT3(1.f, 0.95f, 0.88f);
+	pt.Intensity = keyLightIntensity * 0.35f;
 	pt.Direction = XMFLOAT3(0.f, -1.f, 0.f);
 	pt.SpotInnerCos = 0.f;
 	pt.SpotOuterCos = 0.f;
@@ -509,6 +492,15 @@ LRESULT ObjTexturesDemoApp::MsgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
 		case VK_LCONTROL:
 		case VK_RCONTROL:
 			mKeyDescend = true;
+			return 0;
+		// Lab 3 debug: 0 normal, 1 tess heatmap, 2 wireframe PSO, 3 tess без displacement
+		case 'T':
+		case 't':
+			if ((lParam & 0x40000000) == 0)
+			{
+				mTessDebugMode = (mTessDebugMode + 1) % 4;
+				UpdateWindowCaption();
+			}
 			return 0;
 		}
 		break;

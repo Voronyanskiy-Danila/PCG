@@ -1,3 +1,11 @@
+// =============================================================================
+// Importer_Wavefront_ObjMtl.cpp — парсинг Wavefront OBJ/MTL
+// =============================================================================
+//
+// Lab 3: в MTL обязательны строки map_Bump (normal) и map_disp (displacement).
+// Пути разрешаются относительно папки .mtl (как в rock_07.mtl от gltf_to_obj.py).
+// =============================================================================
+
 #include "Importer_Wavefront_ObjMtl.h"
 
 #include <algorithm>
@@ -77,11 +85,24 @@ bool ParseMtlFile(const fs::path& mtlPath, std::unordered_map<std::string, MtlMa
 		{
 			materials[activeMtlName].Ns = std::stof(parts[1]);
 		}
+		// --- Текстуры для deferred_tessellation.hlsl (порядок SRV задаётся в SceneLoader) ---
 		else if ((tag == "map_Kd" || tag == "map_kd") && !activeMtlName.empty() && parts.size() >= 2)
 		{
 			fs::path texRel = fs::path(Trim(parts[1])).lexically_normal();
 			if (!texRel.empty())
 				materials[activeMtlName].DiffuseTexturePath = (mtlPath.parent_path() / texRel).wstring();
+		}
+		else if ((tag == "map_Bump" || tag == "map_bump" || tag == "norm") && !activeMtlName.empty() && parts.size() >= 2)
+		{
+			fs::path texRel = fs::path(Trim(parts[1])).lexically_normal();
+			if (!texRel.empty())
+				materials[activeMtlName].NormalTexturePath = (mtlPath.parent_path() / texRel).wstring();
+		}
+		else if ((tag == "map_disp" || tag == "map_Displacement") && !activeMtlName.empty() && parts.size() >= 2)
+		{
+			fs::path texRel = fs::path(Trim(parts[1])).lexically_normal();
+			if (!texRel.empty())
+				materials[activeMtlName].DisplacementTexturePath = (mtlPath.parent_path() / texRel).wstring();
 		}
 	}
 

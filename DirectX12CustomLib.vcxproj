@@ -102,9 +102,6 @@
     <ClCompile Include="src\app\ObjTexturesDemoApp_SceneLoader.cpp">
       <Filter>src\app</Filter>
     </ClCompile>
-    <ClCompile Include="src\app\TextureUvSettings.cpp">
-      <Filter>src\app</Filter>
-    </ClCompile>
     <ClCompile Include="src\core\FrameTiming.cpp">
       <Filter>src\core</Filter>
     </ClCompile>
@@ -132,9 +129,6 @@
       <Filter>src\app</Filter>
     </ClInclude>
     <ClInclude Include="src\app\ObjTexturesDemoApp.h">
-      <Filter>src\app</Filter>
-    </ClInclude>
-    <ClInclude Include="src\app\TextureUvSettings.h">
       <Filter>src\app</Filter>
     </ClInclude>
     <ClInclude Include="src\core\FrameTiming.h">

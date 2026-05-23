@@ -1,4 +1,23 @@
-﻿#pragma once
+﻿// =============================================================================
+// ObjTexturesDemoApp.h — приложение Lab 3 (deferred + hardware tessellation)
+// =============================================================================
+//
+// Требования лабораторной:
+//   1) Модель с normal map и displacement map (Rock 07, Poly Haven)
+//   2) Тессиляция + сдвиг по displacement (HS/DS в deferred_tessellation.hlsl)
+//   3) Normal map в G-buffer → освещение в deferred_lighting.hlsl
+//   4) LOD тесселяции от расстояния до камеры (PatchConstantHS)
+//
+// Управление: WASD + мышь — камера; T — цикл debug-режимов (mTessDebugMode 0..3).
+//
+// Связанные файлы:
+//   ObjTexturesDemoApp.cpp          — init, PSO tess, Update, клавиша T
+//   ObjTexturesDemoApp_Draw.cpp     — G-buffer pass + lighting pass
+//   ObjTexturesDemoApp_SceneLoader.cpp — OBJ/MTL, 3 текстуры на материал
+//   content/shaders/deferred_tessellation.hlsl
+// =============================================================================
+
+#pragma once
 
 #include "../math/MathUtils.h"
 #include "../rendering/d3d12/D3d12_GpuUploadBuffer.h"
@@ -6,11 +25,14 @@
 #include "../importers/Importer_Wavefront_ObjMtl.h"
 #include "D3d12AppBase.h"
 
+#include <string>
+#include <unordered_map>
 #include <vector>
 
 using Microsoft::WRL::ComPtr;
 using namespace DirectX;
 
+// Вершина меша: совпадает с VSInput в deferred_tessellation.hlsl
 struct Vertex
 {
 	XMFLOAT3 Pos;
@@ -18,43 +40,45 @@ struct Vertex
 	XMFLOAT2 TexC;
 };
 
+// Constant buffer b0 — байт-в-байт с cbuffer ObjectCB в deferred_tessellation.hlsl
 struct ObjectConstants
 {
 	XMFLOAT4X4 World = MathUtils::Identity4x4();
 	XMFLOAT4X4 WorldInvTranspose = MathUtils::Identity4x4();
 	XMFLOAT4X4 WorldViewProj = MathUtils::Identity4x4();
 
-	XMFLOAT3 EyePosW = {0.0f, 0.0f, 0.0f};
-	float SpecPower = 64.0f;
-
-	XMFLOAT3 LightDirW = {0.577f, -0.577f, 0.577f};
-	float AmbientK = 0.15f;
-
-	XMFLOAT3 LightColor = {1.0f, 1.0f, 1.0f};
+	XMFLOAT3 EyePosW = {0.0f, 0.0f, 0.0f}; // для TessFactorFromWorldPos в hull
 	float _pad0 = 0.0f;
 
-	XMFLOAT3 MatKa = {0.2f, 0.2f, 0.2f};
+	XMFLOAT3 MatKd = {0.8f, 0.8f, 0.8f};
 	float HasDiffuseTexture = 0.0f;
 
-	XMFLOAT3 MatKd = {0.8f, 0.8f, 0.8f};
+	XMFLOAT3 MatKs = {0.2f, 0.2f, 0.2f};
 	float MatNs = 32.0f;
 
-	XMFLOAT3 MatKs = {0.2f, 0.2f, 0.2f};
-	float _pad1 = 0.0f;
-
 	XMFLOAT2 UvScale = {1.0f, 1.0f};
-	XMFLOAT2 UvScroll = {0.0f, 0.0f};
-	// Совпадает с deferred_gbuffer.hlsl: .x = время; .y = движение UV вкл.(1)/выкл.(0).
-	XMFLOAT4 UvAnimParams = {0.0f, 0.0f, 0.0f, 0.0f};
+	XMFLOAT2 _pad1 = {0.0f, 0.0f};
+
+	// Lab 3 — параметры domain/hull (значения по умолчанию под масштаб Rock 07)
+	float DispScale = 0.04f;   // амплитуда displacement
+	float MinTess = 1.0f;      // tess factor вдали
+	float MaxTess = 24.0f;     // tess factor вблизи
+	float TessNear = 5.0f;     // дистанция «полного» tess
+
+	float TessFar = 22.0f;     // дистанция «минимального» tess
+	float HasNormalTexture = 0.0f;
+	float DebugMode = 0.0f;    // 0..3, см. клавишу T
+	float _pad2 = 0.0f;
 };
 
+// Один draw call: диапазон индексов + материал (3 SRV подряд в heap)
 struct DrawSubmesh
 {
 	UINT StartIndexLocation = 0;
 	UINT IndexCount = 0;
-	int DiffuseSrvIndex = 0;
+	int MaterialSrvBase = 0;   // индекс первого SRV: diffuse (t0), +1 normal, +2 disp
 	bool HasDiffuseTexture = false;
-	XMFLOAT3 Ka = {0.2f, 0.2f, 0.2f};
+	bool HasNormalTexture = false;
 	XMFLOAT3 Kd = {0.8f, 0.8f, 0.8f};
 	XMFLOAT3 Ks = {0.2f, 0.2f, 0.2f};
 	float Ns = 32.0f;
@@ -85,18 +109,19 @@ private:
 	void BuildRootSignature();
 	void BuildGeometryInputLayout();
 	void LoadModelAndTextures();
-	void FitWorldAndCameraToMesh(const ObjMeshData& data);
 	void BuildModelGeometry(const ObjMeshData& data);
 	void CreateSrvForTexture(int heapIndex, ID3D12Resource* tex);
+	void LoadTextureToSrvSlot(UINT heapIndex, const wchar_t* path);
+	std::unordered_map<std::string, int> LoadMaterialTextureSets(const ObjMeshData& data);
 	void BuildDeferredGeometryPipeline();
+	void UpdateWindowCaption();
 	void RefreshDeferredSrvs();
 	void SetupSceneLights();
-	void LoadIniTextureUvSettings();
 
 	XMVECTOR CameraForwardNormalized() const;
-
 	void UpdateCameraAttachedSpotLight();
 
+	// Два прохода deferred (Lab 2) + tess в геометрии (Lab 3)
 	void StartDeferredFrameRecording();
 	void RunDeferredGeometryPass();
 	void RunDeferredLightingPass();
@@ -115,21 +140,24 @@ private:
 
 	std::vector<D3D12_INPUT_ELEMENT_DESC> mInputLayout;
 
+	// PSO: VS+HS+DS+PS, PATCH topology; wire — debug режим 2
 	ComPtr<ID3D12PipelineState> mDeferredGeoPSO = nullptr;
+	ComPtr<ID3D12PipelineState> mDeferredGeoWirePSO = nullptr;
+
+	int mTessDebugMode = 0;
 
 	RenderingSystem mRenderer{};
-	UINT mDeferredSrvHeapBase = 0;
+	UINT mDeferredSrvHeapBase = 0; // смещение SRV G-buffer в общем heap
 	std::vector<GpuLight> mSceneLights;
 
 	XMFLOAT4X4 mWorld = MathUtils::Identity4x4();
 	XMFLOAT4X4 mView = MathUtils::Identity4x4();
 	XMFLOAT4X4 mProj = MathUtils::Identity4x4();
 
-	// Свободная камера: yaw (вокруг Y) и pitch (наклон вверх/вниз), радианы.
 	float mYaw = 0.0f;
 	float mPitch = 0.0f;
-
 	XMFLOAT3 mCameraPos{};
+	XMFLOAT3 mDirLightW{0.577f, -0.577f, 0.577f};
 
 	POINT mLastMousePos{};
 
@@ -137,15 +165,11 @@ private:
 	bool mKeyA = false;
 	bool mKeyS = false;
 	bool mKeyD = false;
-	bool mKeyAscend = false;   // Space — вверх по миру
-	bool mKeyDescend = false;  // Ctrl — вниз по миру
+	bool mKeyAscend = false;
+	bool mKeyDescend = false;
 
 	float mCameraSpeed = 8.0f;
 	float mMouseSensitivity = 0.0022f;
 
-	XMFLOAT2 mUvScale = {1.08f, 1.08f};
-	XMFLOAT2 mUvScroll = {0.018f, 0.014f};
-	bool mTextureMovementEnabled = true;
-
-	ObjectConstants mSharedConstants{};
+	ObjectConstants mSharedConstants{}; // заполняется в Update, дополняется per-submesh в Draw
 };
