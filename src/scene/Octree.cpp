@@ -1,0 +1,187 @@
+#include "Octree.h"
+
+#include <algorithm>
+#include <cstdint>
+#include <vector>
+
+using namespace DirectX;
+
+namespace
+{
+
+constexpr int kMaxObjectsPerLeaf = 8;
+constexpr int kMaxDepth = 10;
+
+bool AabbOverlaps(const Aabb& a, const Aabb& b)
+{
+	if (!a.IsValid() || !b.IsValid())
+		return false;
+	return a.Min.x <= b.Max.x && a.Max.x >= b.Min.x && a.Min.y <= b.Max.y && a.Max.y >= b.Min.y &&
+		a.Min.z <= b.Max.z && a.Max.z >= b.Min.z;
+}
+
+Aabb ChildBounds(const Aabb& parent, int octant)
+{
+	const float cx = (parent.Min.x + parent.Max.x) * 0.5f;
+	const float cy = (parent.Min.y + parent.Max.y) * 0.5f;
+	const float cz = (parent.Min.z + parent.Max.z) * 0.5f;
+
+	const int ox = octant & 1;
+	const int oy = (octant >> 1) & 1;
+	const int oz = (octant >> 2) & 1;
+
+	Aabb child = parent;
+	if (ox == 0)
+		child.Max.x = cx;
+	else
+		child.Min.x = cx;
+	if (oy == 0)
+		child.Max.y = cy;
+	else
+		child.Min.y = cy;
+	if (oz == 0)
+		child.Max.z = cz;
+	else
+		child.Min.z = cz;
+	return child;
+}
+
+Aabb BoundsFromItems(const std::vector<OctreeItem>& items, const std::vector<uint32_t>& indices)
+{
+	Aabb b{};
+	for (uint32_t idx : indices)
+		b.Merge(items[idx].Bounds);
+	return b;
+}
+
+const XMFLOAT4X4& InstanceWorld(
+	const void* instances,
+	size_t stride,
+	size_t worldOffset,
+	uint32_t index)
+{
+	const auto* row = static_cast<const char*>(instances) + static_cast<size_t>(index) * stride;
+	return *reinterpret_cast<const XMFLOAT4X4*>(row + worldOffset);
+}
+
+} // namespace
+
+void Octree::Clear()
+{
+	mRoot.reset();
+	mNodeCount = 0;
+}
+
+void Octree::Build(const std::vector<OctreeItem>& items)
+{
+	Clear();
+	if (items.empty())
+		return;
+
+	mRoot = std::make_unique<Node>();
+	mRoot->ObjectIndices.reserve(items.size());
+	for (uint32_t i = 0; i < static_cast<uint32_t>(items.size()); ++i)
+		mRoot->ObjectIndices.push_back(i);
+	mRoot->Bounds = BoundsFromItems(items, mRoot->ObjectIndices);
+	mNodeCount = 1;
+
+	Subdivide(*mRoot, items, 0);
+}
+
+void Octree::Subdivide(Node& node, const std::vector<OctreeItem>& items, int depth)
+{
+	if (static_cast<int>(node.ObjectIndices.size()) <= kMaxObjectsPerLeaf || depth >= kMaxDepth)
+		return;
+
+	std::array<std::vector<uint32_t>, 8> buckets;
+	for (uint32_t objIdx : node.ObjectIndices)
+	{
+		const Aabb& ob = items[objIdx].Bounds;
+		for (int o = 0; o < 8; ++o)
+		{
+			if (AabbOverlaps(ob, ChildBounds(node.Bounds, o)))
+				buckets[static_cast<size_t>(o)].push_back(objIdx);
+		}
+	}
+
+	node.ObjectIndices.clear();
+
+	for (int o = 0; o < 8; ++o)
+	{
+		std::vector<uint32_t>& bucket = buckets[static_cast<size_t>(o)];
+		if (bucket.empty())
+			continue;
+
+		auto child = std::make_unique<Node>();
+		child->ObjectIndices = std::move(bucket);
+		child->Bounds = BoundsFromItems(items, child->ObjectIndices);
+		++mNodeCount;
+		Subdivide(*child, items, depth + 1);
+		node.Children[static_cast<size_t>(o)] = std::move(child);
+	}
+}
+
+void Octree::QueryFrustum(
+	const Frustum& frustum,
+	const std::vector<OctreeItem>& items,
+	const Aabb& localMeshBounds,
+	CXMMATRIX view,
+	CXMMATRIX proj,
+	const void* instances,
+	size_t instanceStrideBytes,
+	size_t worldMatrixOffsetBytes,
+	uint32_t instanceCount,
+	std::vector<uint32_t>& outVisible) const
+{
+	outVisible.clear();
+	if (!mRoot || items.empty() || !instances || instanceStrideBytes == 0)
+		return;
+
+	std::vector<uint8_t> seen(instanceCount, 0);
+	outVisible.reserve(items.size());
+
+	struct StackEntry
+	{
+		const Node* Node = nullptr;
+	};
+	std::vector<StackEntry> stack;
+	stack.push_back({mRoot.get()});
+
+	while (!stack.empty())
+	{
+		const Node* node = stack.back().Node;
+		stack.pop_back();
+		if (!node || !frustum.IntersectsAabb(node->Bounds))
+			continue;
+
+		if (node->IsLeaf())
+		{
+			for (uint32_t itemIdx : node->ObjectIndices)
+			{
+				if (itemIdx >= items.size())
+					continue;
+
+				const uint32_t inst = items[itemIdx].Index;
+				if (inst >= instanceCount || seen[inst])
+					continue;
+
+				const XMFLOAT4X4& world =
+					InstanceWorld(instances, instanceStrideBytes, worldMatrixOffsetBytes, inst);
+				const XMMATRIX wvp = XMLoadFloat4x4(&world) * view * proj;
+				const XMMATRIX clipRow = XMMatrixTranspose(wvp);
+				if (!frustum.IntersectsAabb(localMeshBounds, clipRow))
+					continue;
+
+				seen[inst] = 1;
+				outVisible.push_back(inst);
+			}
+			continue;
+		}
+
+		for (int o = 7; o >= 0; --o)
+		{
+			if (node->Children[static_cast<size_t>(o)])
+				stack.push_back({node->Children[static_cast<size_t>(o)].get()});
+		}
+	}
+}

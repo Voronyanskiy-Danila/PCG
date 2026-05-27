@@ -20,13 +20,19 @@
 
 #include "../importers/Importer_Image_DirectXTex.h"
 #include "../importers/Importer_Wavefront_ObjMtl.h"
+#include "../math/BoundingBox.h"
 #include "../math/SceneFit.h"
 
+#include <algorithm>
+#include <cmath>
 #include <unordered_map>
 #include <vector>
 
 namespace
 {
+	constexpr int kInstanceGrid = 20;
+	constexpr float kInstanceSpacing = 1.1f;
+
 	// Связывает submesh из OBJ с индексом SRV и флагами текстур для ObjectConstants
 	std::vector<DrawSubmesh> BuildDrawSubmeshes(
 		const ObjMeshData& data,
@@ -142,8 +148,61 @@ void ObjTexturesDemoApp::LoadModelAndTextures()
 	BuildModelGeometry(data);
 	mDrawSubmeshes = BuildDrawSubmeshes(data, matToSrvBase);
 	const SceneFitResult fit = ComputeSceneFit(data);
-	mWorld = fit.World;
-	mCameraPos = fit.CameraPos;
-	mYaw = fit.CameraYaw;
-	mPitch = fit.CameraPitch;
+	const Aabb localBounds = ComputeMeshLocalBounds(data);
+	mMeshLocalBounds = localBounds;
+	BuildSceneInstances(fit.World, localBounds);
+	FitCameraToScene();
+}
+
+void ObjTexturesDemoApp::BuildSceneInstances(const XMFLOAT4X4& baseWorld, const Aabb& localBounds)
+{
+	// Lab 4 шаг 1: сетка на плоскости XZ (далее — frustum, octree)
+	const XMMATRIX base = XMLoadFloat4x4(&baseWorld);
+	mInstances.clear();
+	mInstances.reserve(static_cast<size_t>(kInstanceGrid * kInstanceGrid));
+
+	for (int iz = 0; iz < kInstanceGrid; ++iz)
+	{
+		for (int ix = 0; ix < kInstanceGrid; ++ix)
+		{
+			const float ox = (static_cast<float>(ix) - (kInstanceGrid - 1) * 0.5f) * kInstanceSpacing;
+			const float oz = (static_cast<float>(iz) - (kInstanceGrid - 1) * 0.5f) * kInstanceSpacing;
+			const float yaw = static_cast<float>((ix * 17 + iz * 31) % 360) * (XM_PI / 180.f);
+
+			const XMMATRIX world =
+				XMMatrixRotationY(yaw) * XMMatrixTranslation(ox, 0.f, oz) * base;
+
+			SceneInstance inst{};
+			XMStoreFloat4x4(&inst.World, world);
+			inst.WorldBounds = TransformAabb(localBounds, world);
+			mInstances.push_back(inst);
+		}
+	}
+
+	mInstanceCount = static_cast<UINT>(mInstances.size());
+	BuildSceneOctree();
+}
+
+void ObjTexturesDemoApp::BuildSceneOctree()
+{
+	mOctreeItems.clear();
+	mOctreeItems.reserve(mInstances.size());
+	for (uint32_t i = 0; i < static_cast<uint32_t>(mInstances.size()); ++i)
+	{
+		OctreeItem item{};
+		item.Index = i;
+		item.Bounds = mInstances[i].WorldBounds;
+		mOctreeItems.push_back(item);
+	}
+	mOctree.Build(mOctreeItems);
+}
+
+void ObjTexturesDemoApp::FitCameraToScene()
+{
+	const float halfSpan = (kInstanceGrid - 1) * kInstanceSpacing * 0.5f + 6.0f;
+	const float dist = (std::max)(halfSpan * 1.8f, 25.0f);
+
+	mCameraPos = {0.f, dist * 0.4f, -dist};
+	mYaw = 0.f;
+	mPitch = 0.22f;
 }

@@ -14,6 +14,7 @@
 #include "../math/SceneFit.h"
 #include "../rendering/GBuffer.h"
 #include "../rendering/d3d12/D3d12_GpuUploadBuffer.h"
+#include "../rendering/d3d12/D3d12_RenderHelpers.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -57,7 +58,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE prevInstance,
 ObjTexturesDemoApp::ObjTexturesDemoApp(HINSTANCE hInstance)
 : D3d12AppBase(hInstance)
 {
-	mMainWndCaption = L"Lab3 — Rock 07 (Poly Haven)";
+	mMainWndCaption = L"PCG Lab4";
 }
 
 ObjTexturesDemoApp::~ObjTexturesDemoApp()
@@ -108,7 +109,7 @@ void ObjTexturesDemoApp::OnResize()
 {
 	D3d12AppBase::OnResize();
 
-	XMMATRIX P = XMMatrixPerspectiveFovLH(0.25f * MathUtils::Pi, AspectRatio(), 1.0f, 1000.0f);
+	XMMATRIX P = XMMatrixPerspectiveFovLH(0.25f * MathUtils::Pi, AspectRatio(), 0.5f, 5000.0f);
 	XMStoreFloat4x4(&mProj, P);
 
 	mRenderer.ResizeGBuffer(md3dDevice.Get(), static_cast<UINT>(mClientWidth), static_cast<UINT>(mClientHeight));
@@ -153,23 +154,73 @@ void ObjTexturesDemoApp::Update(const FrameTimer& gt)
 	const XMMATRIX view = XMMatrixLookAtLH(pos, lookAt, kWorldUp);
 	XMStoreFloat4x4(&mView, view);
 
-	XMMATRIX world = XMLoadFloat4x4(&mWorld);              // из SceneFit (масштаб камня)
-	XMMATRIX proj = XMLoadFloat4x4(&mProj);
-	XMMATRIX wvp = world * view * proj;                    // для PosH в DomainDS
+	const XMMATRIX proj = XMLoadFloat4x4(&mProj);
+	mFrustum.ExtractFromMatrix(view * proj);
 
 	ObjectConstants obj{};
-	XMStoreFloat4x4(&obj.World, XMMatrixTranspose(world)); // HLSL: mul(v, matrix)
-	XMStoreFloat4x4(&obj.WorldInvTranspose, XMMatrixTranspose(MathUtils::InverseTranspose(world)));
-	XMStoreFloat4x4(&obj.WorldViewProj, XMMatrixTranspose(wvp));
-	obj.EyePosW = mCameraPos;                              // TessFactorFromWorldPos в Hull
+	obj.EyePosW = mCameraPos;
 	obj.UvScale = {1.0f, 1.0f};
-	obj.DebugMode = static_cast<float>(mTessDebugMode);    // 0..3, клавиша T
+	obj.TessNear = 35.0f;
+	obj.TessFar = 180.0f;
+	obj.DebugMode = static_cast<float>(mTessDebugMode);
 	// DispScale, MinTess, MaxTess, TessNear, TessFar — defaults из struct в .h
-	(void)gt;
-	mSharedConstants = obj;                                // копируется в Draw per submesh
+	mSharedConstants = obj;
+
+	mDisplayFps = (dt > 1e-6f) ? (1.0f / dt) : 0.0f;
+
+	UpdateVisibility();
+	UpdateWindowCaption();
 
 	UpdateCameraAttachedSpotLight();
 	mRenderer.SetLights(mSceneLights.data(), static_cast<UINT>(mSceneLights.size()));
+}
+
+void ObjTexturesDemoApp::UpdateVisibility()
+{
+	mVisibleInstances.clear();
+
+	if (!mFrustumCullingEnabled)
+	{
+		mVisibleInstances.reserve(mInstances.size());
+		for (uint32_t i = 0; i < static_cast<uint32_t>(mInstances.size()); ++i)
+			mVisibleInstances.push_back(i);
+	}
+	else
+	{
+		const XMMATRIX view = XMLoadFloat4x4(&mView);
+		const XMMATRIX proj = XMLoadFloat4x4(&mProj);
+
+		if (mOctreeFrustumEnabled)
+		{
+			mOctree.QueryFrustum(
+				mFrustum,
+				mOctreeItems,
+				mMeshLocalBounds,
+				view,
+				proj,
+				mInstances.data(),
+				sizeof(SceneInstance),
+				offsetof(SceneInstance, World),
+				static_cast<uint32_t>(mInstances.size()),
+				mVisibleInstances);
+		}
+		else
+			CullInstancesLinear(view, proj);
+	}
+
+	mVisibleCount = static_cast<UINT>(mVisibleInstances.size());
+}
+
+void ObjTexturesDemoApp::CullInstancesLinear(const XMMATRIX& view, const XMMATRIX& proj)
+{
+	mVisibleInstances.reserve(mInstances.size());
+	for (uint32_t i = 0; i < static_cast<uint32_t>(mInstances.size()); ++i)
+	{
+		const XMMATRIX wvp = XMLoadFloat4x4(&mInstances[i].World) * view * proj;
+		const XMMATRIX clipRow = XMMatrixTranspose(wvp);
+		if (mFrustum.IntersectsAabb(mMeshLocalBounds, clipRow))
+			mVisibleInstances.push_back(i);
+	}
 }
 
 void ObjTexturesDemoApp::UpdateCameraAttachedSpotLight()
@@ -226,7 +277,9 @@ void ObjTexturesDemoApp::BuildDescriptorHeaps(UINT srvCount)
 
 void ObjTexturesDemoApp::BuildConstantBuffers()
 {
-	mObjectCB = std::make_unique<GpuUploadBuffer<ObjectConstants>>(md3dDevice.Get(), 1, true);
+	static constexpr UINT kMaxInstances = 1024;
+	mObjectCbElementSize = Dx12Utils::CalcConstantBufferByteSize(sizeof(ObjectConstants));
+	mObjectCB = std::make_unique<GpuUploadBuffer<ObjectConstants>>(md3dDevice.Get(), kMaxInstances, true);
 }
 
 // Root signature геометрического прохода Lab 3: b0 = ObjectCB, t0..t2 = diffuse/normal/disp
@@ -406,15 +459,8 @@ void ObjTexturesDemoApp::BuildDeferredGeometryPipeline()
 
 void ObjTexturesDemoApp::UpdateWindowCaption()
 {
-	static const wchar_t* kModeNames[] = {
-		L"Normal (tess + displacement + normal)",
-		L"Tess LOD heatmap [T]",
-		L"Tess wireframe [T]",
-		L"Tess only, no displacement [T]",
-	};
-	const int idx = (std::min)(mTessDebugMode, 3);
-	wchar_t cap[256];
-	swprintf_s(cap, L"Lab3 — %s", kModeNames[idx]);
+	wchar_t cap[128];
+	swprintf_s(cap, 128, L"%.0f FPS | %u/%u", mDisplayFps, mVisibleCount, mInstanceCount);
 	SetWindowText(mhMainWnd, cap);
 }
 
@@ -437,8 +483,8 @@ void ObjTexturesDemoApp::SetupSceneLights()
 
 	GpuLight pt{};
 	pt.Type = kLightTypePoint;
-	pt.Position = XMFLOAT3(0.f, 12.f, 0.f);
-	pt.Range = 55.f;
+	pt.Position = XMFLOAT3(0.f, 60.f, 0.f);
+	pt.Range = 400.f;
 	pt.Color = XMFLOAT3(1.f, 0.95f, 0.88f);
 	pt.Intensity = keyLightIntensity * 0.35f;
 	pt.Direction = XMFLOAT3(0.f, -1.f, 0.f);
@@ -451,7 +497,7 @@ void ObjTexturesDemoApp::SetupSceneLights()
 	sp.Type = kLightTypeSpot;
 	sp.Position = mCameraPos;
 	sp.Direction = XMFLOAT3(0.f, 0.f, 1.f);
-	sp.Range = 32.f;
+	sp.Range = 120.f;
 	sp.Color = XMFLOAT3(0.85f, 0.92f, 1.f);
 	sp.Intensity = keyLightIntensity;
 	sp.SpotInnerCos = cosf(XMConvertToRadians(8.f));
@@ -497,8 +543,19 @@ LRESULT ObjTexturesDemoApp::MsgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
 		case 'T':
 		case 't':
 			if ((lParam & 0x40000000) == 0)
-			{
 				mTessDebugMode = (mTessDebugMode + 1) % 4;
+			return 0;
+		case VK_F1:
+			if ((lParam & 0x40000000) == 0)
+			{
+				mFrustumCullingEnabled = !mFrustumCullingEnabled;
+				UpdateWindowCaption();
+			}
+			return 0;
+		case VK_F3:
+			if ((lParam & 0x40000000) == 0)
+			{
+				mOctreeFrustumEnabled = !mOctreeFrustumEnabled;
 				UpdateWindowCaption();
 			}
 			return 0;
@@ -507,6 +564,10 @@ LRESULT ObjTexturesDemoApp::MsgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
 	case WM_KEYUP:
 		switch (wParam)
 		{
+		case VK_F1:
+		case VK_F2:
+		case VK_F3:
+			return 0;
 		case 'W':
 		case 'w':
 			mKeyW = false;

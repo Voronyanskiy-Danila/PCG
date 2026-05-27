@@ -65,23 +65,40 @@ void ObjTexturesDemoApp::RunDeferredGeometryPass()
 	const UINT srvIncr = mCbvSrvUavDescriptorSize;       // размер одного descriptor в heap
 	const CD3DX12_GPU_DESCRIPTOR_HANDLE srvBase{mSrvHeap->GetGPUDescriptorHandleForHeapStart()};
 
-	for (const DrawSubmesh& sm : mDrawSubmeshes)           // по материалам/кускам меша
+	const XMMATRIX view = XMLoadFloat4x4(&mView);
+	const XMMATRIX proj = XMLoadFloat4x4(&mProj);
+	UINT cbSlot = 0u;
+
+	for (uint32_t instIdx : mVisibleInstances)
 	{
-		ObjectConstants per = mSharedConstants;            // World, EyePosW, tess, DebugMode из Update
-		per.MatKd = sm.Kd;                                 // цвет материала из MTL
-		per.MatKs = sm.Ks;
-		per.MatNs = sm.Ns;
-		per.HasDiffuseTexture = sm.HasDiffuseTexture ? 1.f : 0.f;
-		per.HasNormalTexture = sm.HasNormalTexture ? 1.f : 0.f;
+		const SceneInstance& inst = mInstances[instIdx];
+		const XMMATRIX world = XMLoadFloat4x4(&inst.World);
+		const XMMATRIX wvp = world * view * proj;
 
-		mObjectCB->CopyData(0u, per);                      // CPU → upload buffer → GPU b0
-		cmd->SetGraphicsRootConstantBufferView(0u, mObjectCB->Resource()->GetGPUVirtualAddress());
+		for (const DrawSubmesh& sm : mDrawSubmeshes)
+		{
+			ObjectConstants per = mSharedConstants;
+			XMStoreFloat4x4(&per.World, XMMatrixTranspose(world));
+			XMStoreFloat4x4(&per.WorldInvTranspose, XMMatrixTranspose(MathUtils::InverseTranspose(world)));
+			XMStoreFloat4x4(&per.WorldViewProj, XMMatrixTranspose(wvp));
+			per.MatKd = sm.Kd;
+			per.MatKs = sm.Ks;
+			per.MatNs = sm.Ns;
+			per.HasDiffuseTexture = sm.HasDiffuseTexture ? 1.f : 0.f;
+			per.HasNormalTexture = sm.HasNormalTexture ? 1.f : 0.f;
 
-		CD3DX12_GPU_DESCRIPTOR_HANDLE texH{srvBase};
-		texH.Offset(sm.MaterialSrvBase, srvIncr);          // base+0 diff, +1 normal, +2 disp
-		cmd->SetGraphicsRootDescriptorTable(1u, texH);
+			mObjectCB->CopyData(static_cast<int>(cbSlot), per);
+			const UINT64 cbGpu = mObjectCB->Resource()->GetGPUVirtualAddress() +
+				static_cast<UINT64>(cbSlot) * static_cast<UINT64>(mObjectCbElementSize);
+			cmd->SetGraphicsRootConstantBufferView(0u, cbGpu);
+			++cbSlot;
 
-		cmd->DrawIndexedInstanced(sm.IndexCount, 1u, sm.StartIndexLocation, 0, 0u);
+			CD3DX12_GPU_DESCRIPTOR_HANDLE texH{srvBase};
+			texH.Offset(sm.MaterialSrvBase, srvIncr);
+			cmd->SetGraphicsRootDescriptorTable(1u, texH);
+
+			cmd->DrawIndexedInstanced(sm.IndexCount, 1u, sm.StartIndexLocation, 0, 0u);
+		}
 	}
 }
 

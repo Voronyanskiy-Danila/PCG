@@ -105,6 +105,15 @@
     <ClCompile Include="src\core\FrameTiming.cpp">
       <Filter>src\core</Filter>
     </ClCompile>
+    <ClCompile Include="src\math\BoundingBox.cpp">
+      <Filter>src\math</Filter>
+    </ClCompile>
+    <ClCompile Include="src\math\Frustum.cpp">
+      <Filter>src\math</Filter>
+    </ClCompile>
+    <ClCompile Include="src\scene\Octree.cpp">
+      <Filter>src\scene</Filter>
+    </ClCompile>
     <ClCompile Include="src\math\SceneFit.cpp">
       <Filter>src\math</Filter>
     </ClCompile>
@@ -155,6 +164,15 @@
     <ClInclude Include="src\math\MathUtils.h">
       <Filter>src\math</Filter>
     </ClInclude>
+    <ClInclude Include="src\math\BoundingBox.h">
+      <Filter>src\math</Filter>
+    </ClInclude>
+    <ClInclude Include="src\math\Frustum.h">
+      <Filter>src\math</Filter>
+    </ClInclude>
+    <ClInclude Include="src\scene\Octree.h">
+      <Filter>src\scene</Filter>
+    </ClInclude>
     <ClInclude Include="src\math\SceneFit.h">
       <Filter>src\math</Filter>
     </ClInclude>
@@ -180,6 +198,9 @@
     </Filter>
     <Filter Include="src\math">
       <UniqueIdentifier>{a1b1c1d1-5555-5555-5555-555555555555}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="src\scene">
+      <UniqueIdentifier>{a1b1c1d1-6666-6666-6666-666666666666}</UniqueIdentifier>
     </Filter>
     <Filter Include="src\importers">
       <UniqueIdentifier>{a1b1c1d1-f1ee-eeee-eeee-eeeeeeeeeeee}</UniqueIdentifier>

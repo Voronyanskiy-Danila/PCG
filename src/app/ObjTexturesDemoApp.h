@@ -19,6 +19,9 @@
 
 #pragma once
 
+#include "../math/BoundingBox.h"
+#include "../math/Frustum.h"
+#include "../scene/Octree.h"
 #include "../math/MathUtils.h"
 #include "../rendering/d3d12/D3d12_GpuUploadBuffer.h"
 #include "../rendering/RenderingSystem.h"
@@ -84,6 +87,12 @@ struct DrawSubmesh
 	float Ns = 32.0f;
 };
 
+struct SceneInstance
+{
+	XMFLOAT4X4 World = MathUtils::Identity4x4();
+	Aabb WorldBounds{};
+};
+
 class ObjTexturesDemoApp : public D3d12AppBase
 {
 public:
@@ -117,6 +126,11 @@ private:
 	void UpdateWindowCaption();
 	void RefreshDeferredSrvs();
 	void SetupSceneLights();
+	void BuildSceneInstances(const XMFLOAT4X4& baseWorld, const Aabb& localBounds);
+	void BuildSceneOctree();
+	void FitCameraToScene();
+	void UpdateVisibility();
+	void CullInstancesLinear(const XMMATRIX& view, const XMMATRIX& proj);
 
 	XMVECTOR CameraForwardNormalized() const;
 	void UpdateCameraAttachedSpotLight();
@@ -131,8 +145,20 @@ private:
 	ComPtr<ID3D12DescriptorHeap> mSrvHeap = nullptr;
 
 	std::unique_ptr<GpuUploadBuffer<ObjectConstants>> mObjectCB = nullptr;
+	UINT mObjectCbElementSize = 0;
 
 	std::unique_ptr<MeshGeometry> mModelGeo = nullptr;
+	std::vector<SceneInstance> mInstances;
+	Aabb mMeshLocalBounds{};
+	std::vector<uint32_t> mVisibleInstances;
+	UINT mInstanceCount = 0;
+	UINT mVisibleCount = 0;
+
+	bool mFrustumCullingEnabled = true;
+	bool mOctreeFrustumEnabled = false;
+	Frustum mFrustum{};
+	Octree mOctree{};
+	std::vector<OctreeItem> mOctreeItems;
 	std::vector<DrawSubmesh> mDrawSubmeshes;
 
 	std::vector<ComPtr<ID3D12Resource>> mTextureGPU;
@@ -150,7 +176,6 @@ private:
 	UINT mDeferredSrvHeapBase = 0; // смещение SRV G-buffer в общем heap
 	std::vector<GpuLight> mSceneLights;
 
-	XMFLOAT4X4 mWorld = MathUtils::Identity4x4();
 	XMFLOAT4X4 mView = MathUtils::Identity4x4();
 	XMFLOAT4X4 mProj = MathUtils::Identity4x4();
 
@@ -170,6 +195,7 @@ private:
 
 	float mCameraSpeed = 8.0f;
 	float mMouseSensitivity = 0.0022f;
+	float mDisplayFps = 0.0f;
 
 	ObjectConstants mSharedConstants{}; // заполняется в Update, дополняется per-submesh в Draw
 };
