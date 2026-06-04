@@ -1,20 +1,12 @@
 ﻿// =============================================================================
-// ObjTexturesDemoApp.h — приложение Lab 3 (deferred + hardware tessellation)
+// ObjTexturesDemoApp.h — Lab 3 (tess) + Lab 5 (particles)
 // =============================================================================
 //
-// Требования лабораторной:
-//   1) Модель с normal map и displacement map (Rock 07, Poly Haven)
-//   2) Тессиляция + сдвиг по displacement (HS/DS в deferred_tessellation.hlsl)
-//   3) Normal map в G-buffer → освещение в deferred_lighting.hlsl
-//   4) LOD тесселяции от расстояния до камеры (PatchConstantHS)
-//
-// Управление: WASD + мышь — камера; T — цикл debug-режимов (mTessDebugMode 0..3).
-//
-// Связанные файлы:
-//   ObjTexturesDemoApp.cpp          — init, PSO tess, Update, клавиша T
-//   ObjTexturesDemoApp_Draw.cpp     — G-buffer pass + lighting pass
-//   ObjTexturesDemoApp_SceneLoader.cpp — OBJ/MTL, 3 текстуры на материал
-//   content/shaders/deferred_tessellation.hlsl
+// Lab 3:
+//   1) Rock 07 + normal/displacement maps
+//   2) Tessellation + displacement (deferred_tessellation.hlsl)
+//   3) Normal map → G-buffer → deferred_lighting.hlsl
+//   4) LOD tess по расстоянию (PatchConstantHS)
 // =============================================================================
 
 #pragma once
@@ -96,6 +88,11 @@ struct SceneInstance
 class ObjTexturesDemoApp : public D3d12AppBase
 {
 public:
+	static constexpr float kCameraNearZ = 0.5f;
+	static constexpr float kCameraFarZ = 5000.0f;
+	static constexpr float kCameraFovYRad = 0.25f * DirectX::XM_PI;
+	static constexpr float kShadowCullFovScale = 1.5f;
+
 	ObjTexturesDemoApp(HINSTANCE hInstance);
 	ObjTexturesDemoApp(const ObjTexturesDemoApp& rhs) = delete;
 	ObjTexturesDemoApp& operator=(const ObjTexturesDemoApp& rhs) = delete;
@@ -118,10 +115,10 @@ private:
 	void BuildRootSignature();
 	void BuildGeometryInputLayout();
 	void LoadModelAndTextures();
-	void BuildModelGeometry(const ObjMeshData& data);
+	std::unique_ptr<MeshGeometry> BuildModelGeometry(const ObjMeshData& data, const char* name);
 	void CreateSrvForTexture(int heapIndex, ID3D12Resource* tex);
 	void LoadTextureToSrvSlot(UINT heapIndex, const wchar_t* path);
-	std::unordered_map<std::string, int> LoadMaterialTextureSets(const ObjMeshData& data);
+	std::unordered_map<std::string, int> LoadMaterialTextureSets(const ObjMeshData& data, UINT& nextSlot);
 	void BuildDeferredGeometryPipeline();
 	void UpdateWindowCaption();
 	void RefreshDeferredSrvs();
@@ -130,13 +127,17 @@ private:
 	void BuildSceneOctree();
 	void FitCameraToScene();
 	void UpdateVisibility();
+	void UpdateShadowCasters();
 	void CullInstancesLinear(const XMMATRIX& view, const XMMATRIX& proj);
+	UINT CountShadowDrawCalls() const;
 
 	XMVECTOR CameraForwardNormalized() const;
 	void UpdateCameraAttachedSpotLight();
 
 	// Два прохода deferred (Lab 2) + tess в геометрии (Lab 3)
 	void StartDeferredFrameRecording();
+	void BindAndClearGBuffer();
+	void RunShadowPass();
 	void RunDeferredGeometryPass();
 	void RunDeferredLightingPass();
 	void SubmitCommandListPresentAndFlush();
@@ -147,19 +148,28 @@ private:
 	std::unique_ptr<GpuUploadBuffer<ObjectConstants>> mObjectCB = nullptr;
 	UINT mObjectCbElementSize = 0;
 
-	std::unique_ptr<MeshGeometry> mModelGeo = nullptr;
+	std::unique_ptr<MeshGeometry> mRockGeo = nullptr;
+	std::unique_ptr<MeshGeometry> mSceneGeo = nullptr;
 	std::vector<SceneInstance> mInstances;
 	Aabb mMeshLocalBounds{};
+	Aabb mSponzaWorldBounds{};
+	Aabb mSceneWorldBounds{};
 	std::vector<uint32_t> mVisibleInstances;
+	std::vector<uint32_t> mShadowCastInstances;
 	UINT mInstanceCount = 0;
 	UINT mVisibleCount = 0;
+	UINT mShadowCastCount = 0;
+	UINT mShadowDrawSlotsUsed = 0;
+	bool mShadowDrawOverflow = false;
+	bool mShadowDrawSponza = true;
 
 	bool mFrustumCullingEnabled = true;
 	bool mOctreeFrustumEnabled = false;
 	Frustum mFrustum{};
 	Octree mOctree{};
 	std::vector<OctreeItem> mOctreeItems;
-	std::vector<DrawSubmesh> mDrawSubmeshes;
+	std::vector<DrawSubmesh> mRockSubmeshes;
+	std::vector<DrawSubmesh> mSceneSubmeshes;
 
 	std::vector<ComPtr<ID3D12Resource>> mTextureGPU;
 	std::vector<ComPtr<ID3D12Resource>> mTextureUploads;
@@ -182,9 +192,10 @@ private:
 	float mYaw = 0.0f;
 	float mPitch = 0.0f;
 	XMFLOAT3 mCameraPos{};
-	XMFLOAT3 mDirLightW{0.577f, -0.577f, 0.577f};
+	XMFLOAT3 mDirLightW{0.35f, -0.85f, 0.38f};
 
 	POINT mLastMousePos{};
+	bool mSkipNextMouseLook = false;
 
 	bool mKeyW = false;
 	bool mKeyA = false;
@@ -192,8 +203,10 @@ private:
 	bool mKeyD = false;
 	bool mKeyAscend = false;
 	bool mKeyDescend = false;
+	bool mKeyBoost = false;
 
-	float mCameraSpeed = 8.0f;
+	float mCameraSpeed = 280.0f;
+	float mCameraBoostMultiplier = 2.5f;
 	float mMouseSensitivity = 0.0022f;
 	float mDisplayFps = 0.0f;
 

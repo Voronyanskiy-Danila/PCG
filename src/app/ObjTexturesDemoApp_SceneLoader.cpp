@@ -30,7 +30,8 @@
 
 namespace
 {
-	constexpr int kInstanceGrid = 20;
+	constexpr int kInstanceGridX = 20;
+	constexpr int kInstanceGridZ = 10;
 	constexpr float kInstanceSpacing = 1.1f;
 
 	// Связывает submesh из OBJ с индексом SRV и флагами текстур для ObjectConstants
@@ -68,10 +69,10 @@ namespace
 }
 
 // Возвращает map: имя материала → индекс первого SRV (diffuse) в heap
-std::unordered_map<std::string, int> ObjTexturesDemoApp::LoadMaterialTextureSets(const ObjMeshData& data)
+std::unordered_map<std::string, int> ObjTexturesDemoApp::LoadMaterialTextureSets(
+	const ObjMeshData& data,
+	UINT& nextSlot)
 {
-	const UINT slotsPerMaterial = 3u;
-	UINT nextSlot = 1u;
 	std::unordered_map<std::string, int> matToSrvBase;
 
 	for (const auto& kv : data.Materials)
@@ -89,7 +90,7 @@ std::unordered_map<std::string, int> ObjTexturesDemoApp::LoadMaterialTextureSets
 		LoadTextureToSrvSlot(nextSlot + 0u, diffPath);
 		LoadTextureToSrvSlot(nextSlot + 1u, normPath);
 		LoadTextureToSrvSlot(nextSlot + 2u, dispPath);
-		nextSlot += slotsPerMaterial;
+		nextSlot += 3u;
 	}
 
 	return matToSrvBase;
@@ -119,22 +120,30 @@ void ObjTexturesDemoApp::LoadTextureToSrvSlot(UINT heapIndex, const wchar_t* pat
 void ObjTexturesDemoApp::LoadModelAndTextures()
 {
 	std::wstring err;
-	ObjMeshData data;
-	const wchar_t* kObjPath = L"content/models/rock_07/rock_07.obj";
+	ObjMeshData rockData;
+	ObjMeshData sponzaData;
+	const wchar_t* kRockObjPath = L"content/models/rock_07/rock_07.obj";
+	const wchar_t* kSponzaObjPath = L"content/models/sponza/sponza.obj";
 
-	if (!LoadWavefrontObj(kObjPath, data, err))
+	if (!LoadWavefrontObj(kRockObjPath, rockData, err))
 	{
 		std::wstring msg = err;
 		msg += L"\n\nExpected: content/models/rock_07/rock_07.obj (+ .mtl, textures/).";
 		msg += L"\nRun: powershell -File tools/download_rock07.ps1";
 		throw DxException(E_FAIL, msg, AnsiToWString(__FILE__), __LINE__);
 	}
+	if (!LoadWavefrontObj(kSponzaObjPath, sponzaData, err))
+	{
+		std::wstring msg = err;
+		msg += L"\n\nExpected: content/models/sponza/sponza.obj (+ .mtl, textures/).";
+		throw DxException(E_FAIL, msg, AnsiToWString(__FILE__), __LINE__);
+	}
 
-	const UINT slotsPerMaterial = 3u;
-	const UINT materialSlots = static_cast<UINT>(data.Materials.size()) * slotsPerMaterial;
+	const UINT materialSlots =
+		static_cast<UINT>((rockData.Materials.size() + sponzaData.Materials.size()) * 3u);
 	// После материалов в heap идут SRV G-buffer + structured buffer огней (RenderingSystem)
 	mDeferredSrvHeapBase = 1u + materialSlots;
-	const UINT srvCount = mDeferredSrvHeapBase + GBuffer::kRtCount + 1u;
+	const UINT srvCount = mDeferredSrvHeapBase + mRenderer.DeferredSrvDescriptorsNeeded();
 	BuildDescriptorHeaps(srvCount);
 	BuildConstantBuffers();
 
@@ -143,30 +152,67 @@ void ObjTexturesDemoApp::LoadModelAndTextures()
 
 	LoadTextureToSrvSlot(0u, L"content/models/white.dds");
 
-	const std::unordered_map<std::string, int> matToSrvBase = LoadMaterialTextureSets(data);
+	UINT nextSlot = 1u;
+	const std::unordered_map<std::string, int> rockMatToSrvBase = LoadMaterialTextureSets(rockData, nextSlot);
+	const std::unordered_map<std::string, int> sponzaMatToSrvBase = LoadMaterialTextureSets(sponzaData, nextSlot);
 
-	BuildModelGeometry(data);
-	mDrawSubmeshes = BuildDrawSubmeshes(data, matToSrvBase);
-	const SceneFitResult fit = ComputeSceneFit(data);
-	const Aabb localBounds = ComputeMeshLocalBounds(data);
-	mMeshLocalBounds = localBounds;
-	BuildSceneInstances(fit.World, localBounds);
+	mRockGeo = BuildModelGeometry(rockData, "RockModel");
+	mSceneGeo = BuildModelGeometry(sponzaData, "SponzaModel");
+	mRockSubmeshes = BuildDrawSubmeshes(rockData, rockMatToSrvBase);
+	mSceneSubmeshes = BuildDrawSubmeshes(sponzaData, sponzaMatToSrvBase);
+
+	const Aabb sponzaLocalBounds = ComputeMeshLocalBounds(sponzaData);
+	mSponzaWorldBounds = sponzaLocalBounds;
+	mSceneWorldBounds = sponzaLocalBounds;
+	mRenderer.SetParticleEmitter({
+		(sponzaLocalBounds.Min.x + sponzaLocalBounds.Max.x) * 0.5f,
+		(sponzaLocalBounds.Min.y + sponzaLocalBounds.Max.y) * 0.5f,
+		(sponzaLocalBounds.Min.z + sponzaLocalBounds.Max.z) * 0.5f
+	});
+
+	// Масштаб камня под размер Sponza (чтобы не перекрывать целые арки/стены).
+	const Aabb rockLocalBounds = ComputeMeshLocalBounds(rockData);
+	const float rockExtent = (std::max)(
+		(std::max)(rockLocalBounds.Max.x - rockLocalBounds.Min.x, rockLocalBounds.Max.y - rockLocalBounds.Min.y),
+		rockLocalBounds.Max.z - rockLocalBounds.Min.z);
+	const float sponzaExtent = (std::max)(
+		(std::max)(sponzaLocalBounds.Max.x - sponzaLocalBounds.Min.x, sponzaLocalBounds.Max.y - sponzaLocalBounds.Min.y),
+		sponzaLocalBounds.Max.z - sponzaLocalBounds.Min.z);
+	const float rockTarget = (std::max)(2.0f, sponzaExtent * 0.03f);
+	const float rockScale = (rockExtent > 1e-5f) ? (rockTarget / rockExtent) : 1.0f;
+
+	const XMVECTOR rockCenter = XMVectorSet(
+		(rockLocalBounds.Min.x + rockLocalBounds.Max.x) * 0.5f,
+		(rockLocalBounds.Min.y + rockLocalBounds.Max.y) * 0.5f,
+		(rockLocalBounds.Min.z + rockLocalBounds.Max.z) * 0.5f,
+		1.0f);
+	const float sponzaCenterX = (sponzaLocalBounds.Min.x + sponzaLocalBounds.Max.x) * 0.5f;
+	const float sponzaCenterZ = (sponzaLocalBounds.Min.z + sponzaLocalBounds.Max.z) * 0.5f;
+	const float sponzaFloorY = sponzaLocalBounds.Min.y;
+
+	const XMMATRIX rockBase =
+		XMMatrixTranslation(-XMVectorGetX(rockCenter), -XMVectorGetY(rockCenter), -XMVectorGetZ(rockCenter)) *
+		XMMatrixScaling(rockScale, rockScale, rockScale) *
+		XMMatrixTranslation(sponzaCenterX, sponzaFloorY + 0.15f, sponzaCenterZ);
+	XMFLOAT4X4 rockBaseWorld = MathUtils::Identity4x4();
+	XMStoreFloat4x4(&rockBaseWorld, rockBase);
+	mMeshLocalBounds = rockLocalBounds;
+	BuildSceneInstances(rockBaseWorld, rockLocalBounds);
 	FitCameraToScene();
 }
 
 void ObjTexturesDemoApp::BuildSceneInstances(const XMFLOAT4X4& baseWorld, const Aabb& localBounds)
 {
-	// Lab 4 шаг 1: сетка на плоскости XZ (далее — frustum, octree)
 	const XMMATRIX base = XMLoadFloat4x4(&baseWorld);
 	mInstances.clear();
-	mInstances.reserve(static_cast<size_t>(kInstanceGrid * kInstanceGrid));
+	mInstances.reserve(static_cast<size_t>(kInstanceGridX * kInstanceGridZ));
 
-	for (int iz = 0; iz < kInstanceGrid; ++iz)
+	for (int iz = 0; iz < kInstanceGridZ; ++iz)
 	{
-		for (int ix = 0; ix < kInstanceGrid; ++ix)
+		for (int ix = 0; ix < kInstanceGridX; ++ix)
 		{
-			const float ox = (static_cast<float>(ix) - (kInstanceGrid - 1) * 0.5f) * kInstanceSpacing;
-			const float oz = (static_cast<float>(iz) - (kInstanceGrid - 1) * 0.5f) * kInstanceSpacing;
+			const float ox = (static_cast<float>(ix) - (kInstanceGridX - 1) * 0.5f) * kInstanceSpacing;
+			const float oz = (static_cast<float>(iz) - (kInstanceGridZ - 1) * 0.5f) * kInstanceSpacing;
 			const float yaw = static_cast<float>((ix * 17 + iz * 31) % 360) * (XM_PI / 180.f);
 
 			const XMMATRIX world =
@@ -180,6 +226,10 @@ void ObjTexturesDemoApp::BuildSceneInstances(const XMFLOAT4X4& baseWorld, const 
 	}
 
 	mInstanceCount = static_cast<UINT>(mInstances.size());
+
+	for (const SceneInstance& inst : mInstances)
+		mSceneWorldBounds.Merge(inst.WorldBounds);
+
 	BuildSceneOctree();
 }
 
@@ -199,10 +249,18 @@ void ObjTexturesDemoApp::BuildSceneOctree()
 
 void ObjTexturesDemoApp::FitCameraToScene()
 {
-	const float halfSpan = (kInstanceGrid - 1) * kInstanceSpacing * 0.5f + 6.0f;
-	const float dist = (std::max)(halfSpan * 1.8f, 25.0f);
+	const Aabb& fit = mSponzaWorldBounds.IsValid() ? mSponzaWorldBounds : mSceneWorldBounds;
+	const float spanX = fit.Max.x - fit.Min.x;
+	const float spanZ = fit.Max.z - fit.Min.z;
+	const float spanY = (std::max)(fit.Max.y - fit.Min.y, 1.0f);
+	const float sceneSpan = (std::max)((std::max)(spanX, spanZ), 1.0f);
+	const float dist = (std::min)((std::max)(sceneSpan * 0.38f, 28.0f), 85.0f);
 
-	mCameraPos = {0.f, dist * 0.4f, -dist};
+	const float cx = (fit.Min.x + fit.Max.x) * 0.5f;
+	const float cz = (fit.Min.z + fit.Max.z) * 0.5f;
+
+	mCameraPos = {cx, fit.Min.y + spanY * 0.35f + 6.0f, cz - dist};
 	mYaw = 0.f;
-	mPitch = 0.22f;
+	mPitch = 0.12f;
+	mSkipNextMouseLook = true;
 }

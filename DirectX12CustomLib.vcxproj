@@ -117,6 +117,9 @@
     <ClCompile Include="src\math\SceneFit.cpp">
       <Filter>src\math</Filter>
     </ClCompile>
+    <ClCompile Include="src\rendering\CascadedShadowMaps.cpp">
+      <Filter>src\rendering</Filter>
+    </ClCompile>
     <ClCompile Include="src\rendering\GBuffer.cpp">
       <Filter>src\rendering</Filter>
     </ClCompile>
@@ -143,7 +146,13 @@
     <ClInclude Include="src\core\FrameTiming.h">
       <Filter>src\core</Filter>
     </ClInclude>
+    <ClInclude Include="src\rendering\CascadedShadowMaps.h">
+      <Filter>src\rendering</Filter>
+    </ClInclude>
     <ClInclude Include="src\rendering\GBuffer.h">
+      <Filter>src\rendering</Filter>
+    </ClInclude>
+    <ClInclude Include="src\rendering\ShadowStructures.h">
       <Filter>src\rendering</Filter>
     </ClInclude>
     <ClInclude Include="src\rendering\GpuLightStructures.h">

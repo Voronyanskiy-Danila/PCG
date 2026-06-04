@@ -9,8 +9,11 @@
 
 #pragma once
 
+#include "CascadedShadowMaps.h"
 #include "GBuffer.h"
 #include "GpuLightStructures.h"
+#include "ShadowStructures.h"
+#include "../particles/ParticleTypes.h"
 #include "../rendering/d3d12/D3d12_GpuUploadBuffer.h"
 #include "../rendering/d3d12/d3dx12.h"
 
@@ -36,7 +39,7 @@ public:
 		UINT descriptorIncrementSize,
 		ID3D12DescriptorHeap* shaderVisibleSrvHeap);
 
-	UINT DeferredSrvDescriptorsNeeded() const { return GBuffer::kRtCount + 1u; }
+	UINT DeferredSrvDescriptorsNeeded() const { return GBuffer::kRtCount + 2u; }
 
 	GBuffer* GetGBuffer() { return &m_gbuffer; }
 	const GBuffer* GetGBuffer() const { return &m_gbuffer; }
@@ -55,6 +58,30 @@ public:
 		const DirectX::XMFLOAT3& dirLightColor,
 		float dirIntensity);
 
+	void InitializeShadows(ID3D12Device* device);
+	void ResizeShadows(ID3D12Device* device);
+	void UpdateShadowCascades(
+		DirectX::CXMMATRIX view,
+		DirectX::CXMMATRIX proj,
+		const DirectX::XMFLOAT3& lightDirWorld,
+		const DirectX::XMFLOAT3& eyeWorld,
+		const DirectX::XMFLOAT3& cameraForwardWorld,
+		const struct Aabb& sceneBounds,
+		float cameraNear,
+		float cameraFar,
+		float cameraFovYRad,
+		float cameraAspect);
+
+	void BeginShadowPass(ID3D12GraphicsCommandList* cmd, UINT cascadeIndex);
+	void EndShadowPass(ID3D12GraphicsCommandList* cmd);
+
+	void SetShadowPipeline(ID3D12GraphicsCommandList* cmd);
+	Microsoft::WRL::ComPtr<ID3D12RootSignature> ShadowRootSignature() const { return m_rsShadow; }
+	GpuUploadBuffer<ShadowDrawConstants>& ShadowDrawCb() { return *m_shadowDrawCb; }
+	UINT ShadowDrawCbElementSize() const { return m_shadowDrawCbElementSize; }
+
+	const CascadedShadowMaps& Shadows() const { return m_shadows; }
+
 	void TransitionGbufferToRenderTarget(ID3D12GraphicsCommandList* cmd);
 	void TransitionGbufferToPixelShader(ID3D12GraphicsCommandList* cmd);
 
@@ -65,10 +92,28 @@ public:
 		UINT incr) const;
 
 	GpuUploadBuffer<DeferredLightingConstants>& LightingCb() { return *m_lightingCb; }
+	GpuUploadBuffer<ShadowLightingConstants>& ShadowLightingCb() { return *m_shadowLightingCb; }
+
+	void InitializeParticles(ID3D12Device* device, UINT maxParticles);
+	void SetParticleEmitter(const DirectX::XMFLOAT3& emitterWorld) { m_particleEmitterPos = emitterWorld; }
+	void UpdateParticles(ID3D12GraphicsCommandList* cmd, float deltaTime);
+	void DrawParticles(
+		ID3D12GraphicsCommandList* cmd,
+		D3D12_CPU_DESCRIPTOR_HANDLE backBufferRtv,
+		D3D12_CPU_DESCRIPTOR_HANDLE sceneDepthDsv,
+		const D3D12_VIEWPORT& viewport,
+		const D3D12_RECT& scissor,
+		DirectX::CXMMATRIX view,
+		DirectX::CXMMATRIX proj,
+		DirectX::FXMVECTOR cameraRight,
+		DirectX::FXMVECTOR cameraUp);
 
 private:
 	void BuildLightingPipeline(ID3D12Device* device);
+	void BuildShadowPipeline(ID3D12Device* device);
 	void EnsureLightStructuredBuffer(ID3D12Device* device);
+	void BuildParticleComputePipeline(ID3D12Device* device);
+	void BuildParticleDrawPipeline(ID3D12Device* device);
 
 	GBuffer m_gbuffer{};
 
@@ -83,6 +128,14 @@ private:
 	Microsoft::WRL::ComPtr<ID3D12PipelineState> m_psoLighting;
 
 	std::unique_ptr<GpuUploadBuffer<DeferredLightingConstants>> m_lightingCb;
+	std::unique_ptr<GpuUploadBuffer<ShadowLightingConstants>> m_shadowLightingCb;
+	std::unique_ptr<GpuUploadBuffer<ShadowDrawConstants>> m_shadowDrawCb;
+	UINT m_shadowDrawCbElementSize = 0u;
+
+	CascadedShadowMaps m_shadows{};
+	Microsoft::WRL::ComPtr<ID3DBlob> m_shadowVsBc;
+	Microsoft::WRL::ComPtr<ID3D12RootSignature> m_rsShadow;
+	Microsoft::WRL::ComPtr<ID3D12PipelineState> m_psoShadow;
 
 	Microsoft::WRL::ComPtr<ID3D12Resource> m_lightGpuBuffer;
 	void* m_lightMapped = nullptr;
@@ -90,4 +143,28 @@ private:
 
 	bool m_gbIsSrvReadable = false;
 	DXGI_FORMAT m_lightingRtFormat = DXGI_FORMAT_UNKNOWN;
+
+	// Lab 5 particle simulation (Append/Consume ping-pong).
+	UINT m_particleMaxCount = 0;
+	UINT m_particlePingPong = 0;
+
+	Microsoft::WRL::ComPtr<ID3DBlob> m_particleCsBc;
+	Microsoft::WRL::ComPtr<ID3DBlob> m_particleVsBc;
+	Microsoft::WRL::ComPtr<ID3DBlob> m_particleGsBc;
+	Microsoft::WRL::ComPtr<ID3DBlob> m_particlePsBc;
+	Microsoft::WRL::ComPtr<ID3D12RootSignature> m_rsParticleCompute;
+	Microsoft::WRL::ComPtr<ID3D12RootSignature> m_rsParticleDraw;
+	Microsoft::WRL::ComPtr<ID3D12PipelineState> m_psoParticleCompute;
+	Microsoft::WRL::ComPtr<ID3D12PipelineState> m_psoParticleDraw;
+	std::unique_ptr<GpuUploadBuffer<ParticleSimConstants>> m_particleSimCb;
+	std::unique_ptr<GpuUploadBuffer<ParticleDrawConstants>> m_particleDrawCb;
+
+	Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_particleUavHeap;
+	UINT m_particleUavDescriptorSize = 0;
+	Microsoft::WRL::ComPtr<ID3D12Resource> m_particleBuffers[2];
+	Microsoft::WRL::ComPtr<ID3D12Resource> m_particleCounters[2];
+	Microsoft::WRL::ComPtr<ID3D12Resource> m_particleCounterResetZero;
+	Microsoft::WRL::ComPtr<ID3D12Resource> m_particleCounterResetMax;
+	DirectX::XMFLOAT3 m_particleEmitterPos = {0.0f, 0.5f, 0.0f};
+	bool m_particleBufferIsSrv[2] = {false, false};
 };

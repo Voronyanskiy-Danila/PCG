@@ -1,13 +1,3 @@
-// =============================================================================
-// ObjTexturesDemoApp.cpp — инициализация Lab 3, PSO tessellation, Update, ввод
-// =============================================================================
-//
-// Initialize: LoadModelAndTextures → root sig (3 SRV) → RenderingSystem (compile
-//   deferred_tessellation.hlsl) → BuildDeferredGeometryPipeline (VS+HS+DS+PS, PATCH).
-// Update: камера, матрицы, EyePosW + DebugMode в mSharedConstants.
-// MsgProc: T — mTessDebugMode 0..3 (heatmap / wire / no disp).
-// =============================================================================
-
 #include "ObjTexturesDemoApp.h"
 
 #include "../math/MathUtils.h"
@@ -58,7 +48,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE prevInstance,
 ObjTexturesDemoApp::ObjTexturesDemoApp(HINSTANCE hInstance)
 : D3d12AppBase(hInstance)
 {
-	mMainWndCaption = L"PCG Lab4";
+	mMainWndCaption = L"PCG Lab 6";
 }
 
 ObjTexturesDemoApp::~ObjTexturesDemoApp()
@@ -78,6 +68,7 @@ bool ObjTexturesDemoApp::Initialize()
 	BuildGeometryInputLayout();
 
 	mRenderer.Initialize(md3dDevice.Get(), mBackBufferFormat);
+	mRenderer.InitializeParticles(md3dDevice.Get(), 256u);
 	mRenderer.ResizeGBuffer(md3dDevice.Get(), static_cast<UINT>(mClientWidth), static_cast<UINT>(mClientHeight));
 	RefreshDeferredSrvs();
 	BuildDeferredGeometryPipeline();
@@ -109,10 +100,15 @@ void ObjTexturesDemoApp::OnResize()
 {
 	D3d12AppBase::OnResize();
 
-	XMMATRIX P = XMMatrixPerspectiveFovLH(0.25f * MathUtils::Pi, AspectRatio(), 0.5f, 5000.0f);
+	XMMATRIX P = XMMatrixPerspectiveFovLH(
+		kCameraFovYRad,
+		AspectRatio(),
+		kCameraNearZ,
+		kCameraFarZ);
 	XMStoreFloat4x4(&mProj, P);
 
 	mRenderer.ResizeGBuffer(md3dDevice.Get(), static_cast<UINT>(mClientWidth), static_cast<UINT>(mClientHeight));
+	mRenderer.ResizeShadows(md3dDevice.Get());
 	if (mSrvHeap)
 		RefreshDeferredSrvs();
 }
@@ -121,7 +117,8 @@ void ObjTexturesDemoApp::OnResize()
 void ObjTexturesDemoApp::Update(const FrameTimer& gt)
 {
 	const float dt = gt.DeltaTime();                       // время кадра, сек
-	const float speed = mCameraSpeed * dt;                 // метры за кадр
+	const float speedScale = mKeyBoost ? mCameraBoostMultiplier : 1.0f;
+	const float speed = mCameraSpeed * speedScale * dt;    // метры за кадр
 
 	XMVECTOR forward = CameraForwardNormalized();          // куда смотрит камера
 
@@ -169,7 +166,7 @@ void ObjTexturesDemoApp::Update(const FrameTimer& gt)
 	mDisplayFps = (dt > 1e-6f) ? (1.0f / dt) : 0.0f;
 
 	UpdateVisibility();
-	UpdateWindowCaption();
+	UpdateShadowCasters();
 
 	UpdateCameraAttachedSpotLight();
 	mRenderer.SetLights(mSceneLights.data(), static_cast<UINT>(mSceneLights.size()));
@@ -223,6 +220,60 @@ void ObjTexturesDemoApp::CullInstancesLinear(const XMMATRIX& view, const XMMATRI
 	}
 }
 
+void ObjTexturesDemoApp::UpdateShadowCasters()
+{
+	mShadowCastInstances.clear();
+	mShadowDrawSponza = true;
+
+	if (!mFrustumCullingEnabled)
+	{
+		mShadowCastInstances.reserve(mInstances.size());
+		for (uint32_t i = 0; i < static_cast<uint32_t>(mInstances.size()); ++i)
+			mShadowCastInstances.push_back(i);
+	}
+	else
+	{
+		const XMMATRIX view = XMLoadFloat4x4(&mView);
+		const float aspect = AspectRatio();
+		const XMMATRIX projExpanded = XMMatrixPerspectiveFovLH(
+			kCameraFovYRad * kShadowCullFovScale,
+			aspect,
+			kCameraNearZ,
+			kCameraFarZ);
+		const XMMATRIX clipScene = XMMatrixTranspose(view * projExpanded);
+		mShadowDrawSponza = mSceneWorldBounds.IsValid() &&
+			mFrustum.IntersectsAabb(mSceneWorldBounds, clipScene);
+
+		mShadowCastInstances.reserve(mInstances.size());
+		for (uint32_t i = 0; i < static_cast<uint32_t>(mInstances.size()); ++i)
+		{
+			const SceneInstance& inst = mInstances[i];
+			const XMMATRIX wvp = XMLoadFloat4x4(&inst.World) * view * projExpanded;
+			const XMMATRIX clipRow = XMMatrixTranspose(wvp);
+			const bool inExpandedFrustum = mFrustum.IntersectsAabb(inst.WorldBounds, clipRow);
+			const bool inSceneBounds =
+				mSceneWorldBounds.IsValid() && AabbIntersects(inst.WorldBounds, mSceneWorldBounds);
+			if (inExpandedFrustum || inSceneBounds)
+				mShadowCastInstances.push_back(i);
+		}
+	}
+
+	mShadowCastCount = static_cast<UINT>(mShadowCastInstances.size());
+}
+
+UINT ObjTexturesDemoApp::CountShadowDrawCalls() const
+{
+	const UINT sceneDraws =
+		(mShadowDrawSponza && mSceneGeo && !mSceneSubmeshes.empty())
+			? static_cast<UINT>(mSceneSubmeshes.size())
+			: 0u;
+	const UINT rockDraws =
+		(mRockGeo && !mRockSubmeshes.empty())
+			? static_cast<UINT>(mRockSubmeshes.size()) * mShadowCastCount
+			: 0u;
+	return (sceneDraws + rockDraws) * kShadowCascadeCount;
+}
+
 void ObjTexturesDemoApp::UpdateCameraAttachedSpotLight()
 {
 	if (mSceneLights.size() < 2u || mSceneLights[1].Type != kLightTypeSpot)
@@ -231,16 +282,19 @@ void ObjTexturesDemoApp::UpdateCameraAttachedSpotLight()
 	XMVECTOR forward = CameraForwardNormalized();
 
 	GpuLight& spot = mSceneLights[1];
-	spot.Position = mCameraPos;
+	const XMVECTOR eye = XMLoadFloat3(&mCameraPos);
+	const XMVECTOR spotPos = XMVectorAdd(eye, XMVectorScale(forward, 2.0f));
+	XMStoreFloat3(&spot.Position, spotPos);
 	XMStoreFloat3(&spot.Direction, forward);
 }
 
 void ObjTexturesDemoApp::OnMouseDown(WPARAM /*btnState*/, int x, int y)
 {
-    mLastMousePos.x = x;
-    mLastMousePos.y = y;
+	mLastMousePos.x = x;
+	mLastMousePos.y = y;
+	mSkipNextMouseLook = true;
 
-    SetCapture(mhMainWnd);
+	SetCapture(mhMainWnd);
 }
 
 void ObjTexturesDemoApp::OnMouseUp(WPARAM /*btnState*/, int /*x*/, int /*y*/)
@@ -252,13 +306,20 @@ void ObjTexturesDemoApp::OnMouseMove(WPARAM btnState, int x, int y)
 {
 	if ((btnState & (MK_RBUTTON | MK_LBUTTON)) != 0)
 	{
-		const float dx = mMouseSensitivity * static_cast<float>(x - mLastMousePos.x);
-		const float dy = mMouseSensitivity * static_cast<float>(y - mLastMousePos.y);
+		if (mSkipNextMouseLook)
+		{
+			mSkipNextMouseLook = false;
+		}
+		else
+		{
+			const float dx = mMouseSensitivity * static_cast<float>(x - mLastMousePos.x);
+			const float dy = mMouseSensitivity * static_cast<float>(y - mLastMousePos.y);
 
-		mYaw += dx;
-		mPitch -= dy;
-		const float pitchLimit = XM_PIDIV2 - 0.05f;
-		mPitch = MathUtils::Clamp(mPitch, -pitchLimit, pitchLimit);
+			mYaw += dx;
+			mPitch -= dy;
+			const float pitchLimit = XM_PIDIV2 - 0.05f;
+			mPitch = MathUtils::Clamp(mPitch, -pitchLimit, pitchLimit);
+		}
 	}
 
 	mLastMousePos.x = x;
@@ -360,7 +421,7 @@ void ObjTexturesDemoApp::CreateSrvForTexture(int heapIndex, ID3D12Resource* tex)
 	md3dDevice->CreateShaderResourceView(tex, &srvDesc, h);
 }
 
-void ObjTexturesDemoApp::BuildModelGeometry(const ObjMeshData& data)
+std::unique_ptr<MeshGeometry> ObjTexturesDemoApp::BuildModelGeometry(const ObjMeshData& data, const char* name)
 {
 	const size_t n = data.Positions.size();
 	std::vector<Vertex> verts(n);
@@ -374,37 +435,39 @@ void ObjTexturesDemoApp::BuildModelGeometry(const ObjMeshData& data)
 	const UINT vbByteSize = static_cast<UINT>(sizeof(Vertex) * verts.size());
 	const UINT ibByteSize = static_cast<UINT>(sizeof(uint32_t) * data.Indices32.size());
 
-	mModelGeo = std::make_unique<MeshGeometry>();
-	mModelGeo->Name = "ObjModel";
+	auto geo = std::make_unique<MeshGeometry>();
+	geo->Name = name ? name : "ObjModel";
 
-	ThrowIfFailed(D3DCreateBlob(vbByteSize, &mModelGeo->VertexBufferCPU));
-	CopyMemory(mModelGeo->VertexBufferCPU->GetBufferPointer(), verts.data(), vbByteSize);
+	ThrowIfFailed(D3DCreateBlob(vbByteSize, &geo->VertexBufferCPU));
+	CopyMemory(geo->VertexBufferCPU->GetBufferPointer(), verts.data(), vbByteSize);
 
-	ThrowIfFailed(D3DCreateBlob(ibByteSize, &mModelGeo->IndexBufferCPU));
-	CopyMemory(mModelGeo->IndexBufferCPU->GetBufferPointer(), data.Indices32.data(), ibByteSize);
+	ThrowIfFailed(D3DCreateBlob(ibByteSize, &geo->IndexBufferCPU));
+	CopyMemory(geo->IndexBufferCPU->GetBufferPointer(), data.Indices32.data(), ibByteSize);
 
-	mModelGeo->VertexBufferGPU = Dx12Utils::CreateDefaultBuffer(
+	geo->VertexBufferGPU = Dx12Utils::CreateDefaultBuffer(
 		md3dDevice.Get(),
 		mCommandList.Get(),
 		verts.data(),
 		vbByteSize,
-		mModelGeo->VertexBufferUploader);
+		geo->VertexBufferUploader);
 
-	mModelGeo->IndexBufferGPU = Dx12Utils::CreateDefaultBuffer(
+	geo->IndexBufferGPU = Dx12Utils::CreateDefaultBuffer(
 		md3dDevice.Get(),
 		mCommandList.Get(),
 		data.Indices32.data(),
 		ibByteSize,
-		mModelGeo->IndexBufferUploader);
+		geo->IndexBufferUploader);
 
-	mModelGeo->VertexByteStride = sizeof(Vertex);
-	mModelGeo->VertexBufferByteSize = vbByteSize;
-	mModelGeo->IndexFormat = DXGI_FORMAT_R32_UINT;
-	mModelGeo->IndexBufferByteSize = ibByteSize;
+	geo->VertexByteStride = sizeof(Vertex);
+	geo->VertexBufferByteSize = vbByteSize;
+	geo->IndexFormat = DXGI_FORMAT_R32_UINT;
+	geo->IndexBufferByteSize = ibByteSize;
 
-	mModelGeo->IndexCount = static_cast<UINT>(data.Indices32.size());
-	mModelGeo->StartIndexLocation = 0;
-	mModelGeo->BaseVertexLocation = 0;
+	geo->IndexCount = static_cast<UINT>(data.Indices32.size());
+	geo->StartIndexLocation = 0;
+	geo->BaseVertexLocation = 0;
+
+	return geo;
 }
 
 // PSO с hull/domain — заменяет Lab2 deferred_gbuffer.hlsl (простой VS+PS)
@@ -459,8 +522,30 @@ void ObjTexturesDemoApp::BuildDeferredGeometryPipeline()
 
 void ObjTexturesDemoApp::UpdateWindowCaption()
 {
-	wchar_t cap[128];
-	swprintf_s(cap, 128, L"%.0f FPS | %u/%u", mDisplayFps, mVisibleCount, mInstanceCount);
+	wchar_t cap[160];
+	if (mShadowDrawOverflow)
+	{
+		swprintf_s(
+			cap,
+			160,
+			L"Lab 6 | %.0f FPS | vis %u/%u | shd %u CB!",
+			mDisplayFps,
+			mVisibleCount,
+			mInstanceCount,
+			mShadowDrawSlotsUsed);
+	}
+	else
+	{
+		swprintf_s(
+			cap,
+			160,
+			L"Lab 6 | %.0f FPS | vis %u/%u | shd %u/%u",
+			mDisplayFps,
+			mVisibleCount,
+			mInstanceCount,
+			mShadowCastCount,
+			mInstanceCount);
+	}
 	SetWindowText(mhMainWnd, cap);
 }
 
@@ -539,6 +624,11 @@ LRESULT ObjTexturesDemoApp::MsgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
 		case VK_RCONTROL:
 			mKeyDescend = true;
 			return 0;
+		case VK_SHIFT:
+		case VK_LSHIFT:
+		case VK_RSHIFT:
+			mKeyBoost = true;
+			return 0;
 		// Lab 3 debug: 0 normal, 1 tess heatmap, 2 wireframe PSO, 3 tess без displacement
 		case 'T':
 		case 't':
@@ -590,6 +680,11 @@ LRESULT ObjTexturesDemoApp::MsgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
 		case VK_LCONTROL:
 		case VK_RCONTROL:
 			mKeyDescend = false;
+			return 0;
+		case VK_SHIFT:
+		case VK_LSHIFT:
+		case VK_RSHIFT:
+			mKeyBoost = false;
 			return 0;
 		}
 		break;

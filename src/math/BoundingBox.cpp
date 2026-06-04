@@ -35,6 +35,14 @@ bool Aabb::IsValid() const
 	return Min.x <= Max.x && Min.y <= Max.y && Min.z <= Max.z;
 }
 
+bool AabbIntersects(const Aabb& a, const Aabb& b)
+{
+	if (!a.IsValid() || !b.IsValid())
+		return false;
+	return a.Min.x <= b.Max.x && a.Max.x >= b.Min.x && a.Min.y <= b.Max.y && a.Max.y >= b.Min.y &&
+		a.Min.z <= b.Max.z && a.Max.z >= b.Min.z;
+}
+
 Aabb ComputeMeshLocalBounds(const ObjMeshData& mesh)
 {
 	Aabb b{};
@@ -44,9 +52,7 @@ Aabb ComputeMeshLocalBounds(const ObjMeshData& mesh)
 	b.Min = mesh.Positions[0];
 	b.Max = mesh.Positions[0];
 	for (const XMFLOAT3& p : mesh.Positions)
-	{
 		b.ExpandPoint(p);
-	}
 	return b;
 }
 

@@ -13,5 +13,8 @@ struct Aabb
 	bool IsValid() const;
 };
 
+bool AabbIntersects(const Aabb& a, const Aabb& b);
+
 Aabb ComputeMeshLocalBounds(const struct ObjMeshData& mesh);
+
 Aabb TransformAabb(const Aabb& local, DirectX::CXMMATRIX world);

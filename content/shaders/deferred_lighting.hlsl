@@ -1,13 +1,3 @@
-// =============================================================================
-// deferred_lighting.hlsl — второй проход deferred (Lab 2, без изменений в Lab 3)
-// =============================================================================
-//
-// После deferred_tessellation.hlsl в G-buffer уже лежат:
-//   RT0 albedo, RT1 normal (с normal map), RT2 world pos, RT3 Ks/roughness.
-// PS_Light сэмплирует их и считает точечный/прожекторный свет + tone map.
-// Normal map влияет здесь только через gBufNormal (записан в геом. проходе).
-// =============================================================================
-
 Texture2D    gBufAlbedo   : register(t0);
 Texture2D    gBufNormal   : register(t1);
 Texture2D    gBufPosition : register(t2);
@@ -31,6 +21,7 @@ struct GpuLight
 };
 
 StructuredBuffer<GpuLight> gLights : register(t4);
+Texture2DArray<float> gShadowMap : register(t5);
 
 cbuffer LightingCB : register(b0)
 {
@@ -43,7 +34,18 @@ cbuffer LightingCB : register(b0)
 	uint   _p2;
 };
 
+cbuffer ShadowLightingCB : register(b1)
+{
+	float4x4 gLightViewProj[3];
+	float4x4 gViewMatrix;
+	float4   gCascadeSplits;
+	float    gCameraNear;
+	float    gShadowBias;
+	float2   gShadowMapInvSize;
+};
+
 SamplerState gPointClamp : register(s0);
+SamplerComparisonState gShadowSampler : register(s1);
 
 struct VSQuadOut
 {
@@ -65,8 +67,84 @@ float3 ReinhardToneMap(float3 x)
 	return x / (float3(1.f, 1.f, 1.f) + x);
 }
 
-// UV из позиции пикселя надёжнее интерполированных TEXCOORD —
-// совпадает с разрешением G-buffer без рассогласования с viewport.
+float GetViewDepth(float3 worldPos)
+{
+	float4 v = mul(float4(worldPos, 1.0f), gViewMatrix);
+	return max(v.z, 0.0f);
+}
+
+uint SelectCascade(float viewDepth)
+{
+	if (viewDepth < gCascadeSplits.x)
+		return 0u;
+	if (viewDepth < gCascadeSplits.y)
+		return 1u;
+	if (viewDepth < gCascadeSplits.z)
+		return 2u;
+	return 2u;
+}
+
+float SampleShadowPcf(uint cascade, float3 worldPos)
+{
+	float4 posL = mul(float4(worldPos, 1.0f), gLightViewProj[cascade]);
+	float3 proj = posL.xyz / max(abs(posL.w), 1e-5f);
+	float2 uv = proj.xy * 0.5f + 0.5f;
+	uv.y = 1.0f - uv.y;
+
+	// Orthographic light projection: clip Z is already in [0, 1] for D3D.
+	float depth = saturate(proj.z);
+
+	if (any(uv < 0.0f) || any(uv > 1.0f))
+		return 1.0f;
+
+	float shadow = 0.0f;
+	[unroll]
+	for (int y = -1; y <= 1; ++y)
+	{
+		[unroll]
+		for (int x = -1; x <= 1; ++x)
+		{
+			float2 offset = float2(x, y) * gShadowMapInvSize;
+			shadow += gShadowMap.SampleCmpLevelZero(
+				gShadowSampler,
+				float3(uv + offset, (float)cascade),
+				depth - gShadowBias);
+		}
+	}
+	return shadow / 9.0f;
+}
+
+float CalcDirectionalShadow(float3 worldPos)
+{
+	if (dot(worldPos, worldPos) < 1e-4f)
+		return 1.0f;
+
+	const float viewDepth = GetViewDepth(worldPos);
+	uint cascade = SelectCascade(viewDepth);
+	float s = SampleShadowPcf(cascade, worldPos);
+
+	if (cascade > 0u)
+	{
+		float blendEnd;
+		float blendRange;
+		if (cascade == 1u)
+		{
+			blendEnd = gCascadeSplits.x;
+			blendRange = max(blendEnd - gCameraNear, 1e-3f);
+		}
+		else
+		{
+			blendEnd = gCascadeSplits.y;
+			blendRange = max(blendEnd - gCascadeSplits.x, 1e-3f);
+		}
+		const float t = saturate((viewDepth - (blendEnd - blendRange * 0.15f)) / (blendRange * 0.15f));
+		const float sPrev = SampleShadowPcf(cascade - 1u, worldPos);
+		s = lerp(sPrev, s, t);
+	}
+
+	return s;
+}
+
 float4 PS_Light(VSQuadOut pin, float4 posSs : SV_Position) : SV_Target
 {
 	uint w, h, levels;
@@ -78,12 +156,16 @@ float4 PS_Light(VSQuadOut pin, float4 posSs : SV_Position) : SV_Target
 	float3 albedo = albedoS.rgb;
 
 	float4 nS = gBufNormal.Sample(gPointClamp, uv);
-	// После Clear MRT обычно (0,0,0): normalize даёт NaN и «убивает» весь кадр.
 	float nLen2 = dot(nS.xyz, nS.xyz);
-	float3 N = nLen2 > 1e-8f ? nS.xyz * rsqrt(nLen2) : float3(0.f, 0.f, 1.f);
+	if (nLen2 < 1e-6f)
+		return float4(0.04f, 0.05f, 0.08f, 1.f);
+
+	float3 N = nS.xyz * rsqrt(nLen2);
 
 	float4 pS = gBufPosition.Sample(gPointClamp, uv);
 	float3 pw = pS.xyz;
+	if (dot(pw, pw) < 1e-4f)
+		return float4(0.04f, 0.05f, 0.08f, 1.f);
 
 	float4 mx = gBufMatExtra.Sample(gPointClamp, uv);
 	float3 matKs = mx.rgb;
@@ -101,10 +183,11 @@ float4 PS_Light(VSQuadOut pin, float4 posSs : SV_Position) : SV_Target
 
 	float3 dd = gDirLightDirection.xyz;
 	float dDirs = dot(dd, dd);
-	if (dDirs > 1e-8f)
+	if (dDirs > 1e-8f && dot(pw, pw) > 1e-4f)
 	{
 		float3 L = normalize(-dd);
 		float3 sunCol = gDirColorIntensity.xyz * gDirColorIntensity.w;
+		float shadow = CalcDirectionalShadow(pw);
 
 		float NdotL = saturate(dot(N, L));
 		float3 diffuse = NdotL * albedo;
@@ -115,8 +198,8 @@ float4 PS_Light(VSQuadOut pin, float4 posSs : SV_Position) : SV_Target
 		float nh = saturate(dot(N, H));
 		float specAmt = pow(max(nh, 0.f), shininess) * NdotL;
 
-		diffuseAcc += diffuse * sunCol;
-		specAcc += specAmt * matKs * sunCol;
+		diffuseAcc += diffuse * sunCol * shadow;
+		specAcc += specAmt * matKs * sunCol * shadow;
 	}
 
 	const uint MAX_L = 48u;
