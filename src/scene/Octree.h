@@ -4,7 +4,6 @@
 #include "../math/Frustum.h"
 
 #include <array>
-#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <vector>
@@ -24,12 +23,6 @@ public:
 	void QueryFrustum(
 		const Frustum& frustum,
 		const std::vector<OctreeItem>& items,
-		const Aabb& localMeshBounds,
-		DirectX::CXMMATRIX view,
-		DirectX::CXMMATRIX proj,
-		const void* instances,
-		size_t instanceStrideBytes,
-		size_t worldMatrixOffsetBytes,
 		uint32_t instanceCount,
 		std::vector<uint32_t>& outVisible) const;
 

@@ -65,6 +65,8 @@ bool Frustum::IntersectsAabbPlanes(const Aabb& box, const XMFLOAT4 planes[6]) co
 
 bool Frustum::IntersectsAabbClip(const Aabb& box, CXMMATRIX clipRowMatrix, const XMFLOAT4 planes[6]) const
 {
+	(void)planes;
+
 	const XMFLOAT3 corners[8] = {
 		{box.Min.x, box.Min.y, box.Min.z},
 		{box.Max.x, box.Min.y, box.Min.z},
@@ -76,30 +78,34 @@ bool Frustum::IntersectsAabbClip(const Aabb& box, CXMMATRIX clipRowMatrix, const
 		{box.Max.x, box.Max.y, box.Max.z},
 	};
 
-	bool anyInFront = false;
+	XMVECTOR clip[8];
+	for (int i = 0; i < 8; ++i)
+		clip[i] = XMVector4Transform(XMVectorSet(corners[i].x, corners[i].y, corners[i].z, 1.f), clipRowMatrix);
 
-	for (const XMFLOAT3& c : corners)
-	{
-		const XMVECTOR clip = XMVector4Transform(XMVectorSet(c.x, c.y, c.z, 1.f), clipRowMatrix);
-		const float w = XMVectorGetX(XMVectorSplatW(clip));
-		if (w <= 1e-4f)
-			continue;
+	// AABB vs frustum in homogeneous clip space (D3D LH: -w<=x<=w, -w<=y<=w, 0<=z<=w).
+	auto allOutside = [&](auto&& outside) {
+		for (int i = 0; i < 8; ++i)
+		{
+			if (!outside(clip[i]))
+				return false;
+		}
+		return true;
+	};
 
-		anyInFront = true;
-
-		const float iw = 1.f / w;
-		const float x = XMVectorGetX(clip) * iw;
-		const float y = XMVectorGetY(clip) * iw;
-		const float z = XMVectorGetZ(clip) * iw;
-
-		if (x >= -1.f && x <= 1.f && y >= -1.f && y <= 1.f && z >= 0.f && z <= 1.f)
-			return true;
-	}
-
-	if (!anyInFront)
+	if (allOutside([](XMVECTOR c) { return XMVectorGetX(c) + XMVectorGetW(c) < 0.f; }))
+		return false;
+	if (allOutside([](XMVECTOR c) { return XMVectorGetX(c) - XMVectorGetW(c) > 0.f; }))
+		return false;
+	if (allOutside([](XMVECTOR c) { return XMVectorGetY(c) + XMVectorGetW(c) < 0.f; }))
+		return false;
+	if (allOutside([](XMVECTOR c) { return XMVectorGetY(c) - XMVectorGetW(c) > 0.f; }))
+		return false;
+	if (allOutside([](XMVECTOR c) { return XMVectorGetZ(c) < 0.f; }))
+		return false;
+	if (allOutside([](XMVECTOR c) { return XMVectorGetZ(c) - XMVectorGetW(c) > 0.f; }))
 		return false;
 
-	return IntersectsAabbPlanes(box, planes);
+	return true;
 }
 
 bool Frustum::IntersectsAabb(const Aabb& box) const
@@ -107,16 +113,14 @@ bool Frustum::IntersectsAabb(const Aabb& box) const
 	if (!box.IsValid())
 		return false;
 
-	const XMMATRIX clipRow = XMMatrixTranspose(XMLoadFloat4x4(&ViewProj));
-	return IntersectsAabbClip(box, clipRow, Planes);
+	// Row-vector clip: corner * ViewProj (DirectXMath XMVector4Transform).
+	return IntersectsAabbClip(box, XMLoadFloat4x4(&ViewProj), Planes);
 }
 
-bool Frustum::IntersectsAabb(const Aabb& box, CXMMATRIX clipRowMatrix) const
+bool Frustum::IntersectsAabb(const Aabb& box, CXMMATRIX clipTransform) const
 {
 	if (!box.IsValid())
 		return false;
 
-	XMFLOAT4 planes[6];
-	ExtractPlanes(XMMatrixTranspose(clipRowMatrix), planes);
-	return IntersectsAabbClip(box, clipRowMatrix, planes);
+	return IntersectsAabbClip(box, clipTransform, Planes);
 }

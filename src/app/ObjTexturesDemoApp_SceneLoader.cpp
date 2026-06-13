@@ -5,10 +5,11 @@
 // Rock 07 (Poly Haven, CC0):
 //   content/models/rock_07/rock_07.obj + .mtl + textures/*_diff|nor|disp*.jpg
 //
-// На каждый материал в descriptor heap резервируются 3 подряд SRV:
+// На каждый материал в descriptor heap резервируются 4 подряд SRV:
 //   [base+0] diffuse  → shader t0
 //   [base+1] normal    → shader t1
-//   [base+2] displacement → shader t2 (domain shader)
+//   [base+2] displacement → shader t2
+//   [base+3] ARM (AO/R/M) → shader t3 (Lab 8 PBR)
 //
 // Слот 0 — white.dds (fallback, если у submesh нет материала).
 // После загрузки: ComputeSceneFit — центр, масштаб ~10 единиц, стартовая камера.
@@ -22,17 +23,58 @@
 #include "../importers/Importer_Wavefront_ObjMtl.h"
 #include "../math/BoundingBox.h"
 #include "../math/SceneFit.h"
+#include "../math/MathUtils.h"
+
+#include <Windows.h>
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
+#include <cwctype>
+#include <filesystem>
 #include <unordered_map>
 #include <vector>
 
 namespace
 {
-	constexpr int kInstanceGridX = 20;
-	constexpr int kInstanceGridZ = 10;
-	constexpr float kInstanceSpacing = 1.1f;
+	constexpr int kInstanceGridX = 8;
+	constexpr int kInstanceGridZ = 6;
+	constexpr float kRockClearanceAboveSponzaTop = 14.0f;
+
+	std::wstring ToLowerWide(std::wstring s)
+	{
+		std::transform(s.begin(), s.end(), s.begin(), [](wchar_t c) {
+			return static_cast<wchar_t>(std::towlower(c));
+		});
+		return s;
+	}
+
+	void ApplyMaterialPipelineHints(MtlMaterial& m)
+	{
+		const std::wstring probe = ToLowerWide(m.DiffuseTexturePath + L"|" + m.NormalTexturePath);
+		if (probe.find(L"sponza") != std::wstring::npos)
+		{
+			m.UvScale = {1.f, -1.f};
+			m.SkipNormalMap = true;
+		}
+		if (probe.find(L"cerberus") != std::wstring::npos)
+			m.UvScale = {1.f, -1.f};
+
+		if (!m.NormalTexturePath.empty())
+		{
+			const std::wstring norm = ToLowerWide(m.NormalTexturePath);
+			if (norm.find(L"_gl") != std::wstring::npos || norm.find(L"ddn") != std::wstring::npos)
+				m.NormalFlipY = true;
+			else if (norm.find(L"_dx") != std::wstring::npos || norm.find(L"cerberus_n") != std::wstring::npos)
+				m.NormalFlipY = false;
+		}
+	}
+
+	void ApplyPipelineHints(ObjMeshData& data)
+	{
+		for (auto& kv : data.Materials)
+			ApplyMaterialPipelineHints(kv.second);
+	}
 
 	// Связывает submesh из OBJ с индексом SRV и флагами текстур для ObjectConstants
 	std::vector<DrawSubmesh> BuildDrawSubmeshes(
@@ -55,10 +97,22 @@ namespace
 			}
 			const MtlMaterial& m = itMat->second;
 			d.Kd = m.Kd;
-			d.Ks = m.Ks;
-			d.Ns = m.Ns;
+			d.Roughness = m.RoughnessFactor;
+			d.Metallic = m.MetallicFactor;
+			d.NsFallback = m.Ns;
 			d.HasDiffuseTexture = !m.DiffuseTexturePath.empty();
-			d.HasNormalTexture = !m.NormalTexturePath.empty();
+			d.HasNormalTexture = !m.NormalTexturePath.empty() && !m.SkipNormalMap;
+			d.NormalFlipY = m.NormalFlipY;
+			d.SkipNormalMap = m.SkipNormalMap;
+			d.UvScale = m.UvScale;
+			d.HasRmTexture =
+				!m.RmTexturePath.empty() && std::filesystem::exists(std::filesystem::path(m.RmTexturePath));
+			if (!d.HasRmTexture)
+				d.Metallic = 0.f;
+			else if (m.HasMetallicFactor)
+				d.Metallic = m.MetallicFactor;
+			else
+				d.Metallic = 1.f;
 			auto tp = matToSrvBase.find(sm.MaterialName);
 			d.MaterialSrvBase = (tp != matToSrvBase.end()) ? tp->second : 0;
 			out.push_back(d);
@@ -86,11 +140,14 @@ std::unordered_map<std::string, int> ObjTexturesDemoApp::LoadMaterialTextureSets
 			m.NormalTexturePath.empty() ? L"content/models/white.dds" : m.NormalTexturePath.c_str();
 		const wchar_t* dispPath =
 			m.DisplacementTexturePath.empty() ? L"content/models/white.dds" : m.DisplacementTexturePath.c_str();
+		const wchar_t* rmPath =
+			m.RmTexturePath.empty() ? L"content/models/white.dds" : m.RmTexturePath.c_str();
 
 		LoadTextureToSrvSlot(nextSlot + 0u, diffPath);
 		LoadTextureToSrvSlot(nextSlot + 1u, normPath);
 		LoadTextureToSrvSlot(nextSlot + 2u, dispPath);
-		nextSlot += 3u;
+		LoadTextureToSrvSlot(nextSlot + 3u, rmPath);
+		nextSlot += 4u;
 	}
 
 	return matToSrvBase;
@@ -106,6 +163,10 @@ void ObjTexturesDemoApp::LoadTextureToSrvSlot(UINT heapIndex, const wchar_t* pat
 		mTextureUploads[heapIndex]);
 	if (FAILED(hr))
 	{
+		std::wstring msg = L"[PCG] Texture load failed, using white.dds fallback:\n";
+		msg += path ? path : L"(null)";
+		msg += L'\n';
+		OutputDebugStringW(msg.c_str());
 		hr = LoadTextureImageFromFile12(
 			md3dDevice.Get(),
 			mCommandList.Get(),
@@ -117,13 +178,103 @@ void ObjTexturesDemoApp::LoadTextureToSrvSlot(UINT heapIndex, const wchar_t* pat
 	CreateSrvForTexture(static_cast<int>(heapIndex), mTextureGPU[heapIndex].Get());
 }
 
+void ObjTexturesDemoApp::EnsureCerberusAssets()
+{
+	namespace fs = std::filesystem;
+	const fs::path root = ContentRoot();
+	if (root.empty())
+		return;
+
+	const auto runChecked = [](const wchar_t* cmd) {
+		const int rc = _wsystem(cmd);
+		if (rc != 0)
+		{
+			std::wstring msg = L"[PCG] EnsureCerberusAssets failed (code ";
+			msg += std::to_wstring(rc);
+			msg += L"): ";
+			msg += cmd;
+			msg += L"\n";
+			OutputDebugStringW(msg.c_str());
+		}
+	};
+
+	const fs::path cerberusDir = root / L"Stuff" / L"Cerberus_by_Andrew_Maximov";
+	const fs::path texDir = cerberusDir / L"Textures";
+	const fs::path pbrObj = cerberusDir / L"Cerberus_PBR.obj";
+	const auto hasCoreTextures = [&]() {
+		return fs::exists(texDir / L"Cerberus_A.jpg") &&
+			fs::exists(texDir / L"Cerberus_N.jpg") &&
+			fs::exists(texDir / L"Cerberus_R.jpg") &&
+			fs::exists(texDir / L"Cerberus_M.jpg");
+	};
+
+	if (fs::exists(pbrObj) && hasCoreTextures() && fs::exists(texDir / L"Cerberus_ARM.jpg"))
+		return;
+
+	const fs::path zip = root / L"Stuff" / L"PBR models.zip";
+	if (!hasCoreTextures() && fs::exists(zip))
+	{
+		const std::wstring cmd =
+			L"powershell -NoProfile -ExecutionPolicy Bypass -Command \"Expand-Archive -LiteralPath '" +
+			zip.wstring() + L"' -DestinationPath '" + (root / L"Stuff").wstring() + L"' -Force\"";
+		runChecked(cmd.c_str());
+	}
+
+	const fs::path baseObj = cerberusDir / L"Cerberus.obj";
+	if (!fs::exists(baseObj))
+	{
+		const std::wstring cmd =
+			L"powershell -NoProfile -Command \"Invoke-WebRequest -Uri "
+			L"'https://raw.githubusercontent.com/mrdoob/three.js/r165/examples/models/obj/cerberus/Cerberus.obj' "
+			L"-OutFile '" +
+			baseObj.wstring() + L"' -UseBasicParsing\"";
+		runChecked(cmd.c_str());
+	}
+
+	if (fs::exists(root / L"tools" / L"pack_cerberus_arm.py"))
+		runChecked(L"py -3 tools/pack_cerberus_arm.py");
+	if (fs::exists(root / L"tools" / L"prepare_cerberus_obj.py"))
+		runChecked(L"py -3 tools/prepare_cerberus_obj.py");
+
+	if ((!fs::exists(pbrObj) || !hasCoreTextures()) &&
+		fs::exists(root / L"tools" / L"setup_cerberus.ps1"))
+	{
+		runChecked(L"powershell -NoProfile -ExecutionPolicy Bypass -File tools/setup_cerberus.ps1");
+	}
+}
+
+void ObjTexturesDemoApp::EnsureRockAssets()
+{
+	namespace fs = std::filesystem;
+	const fs::path root = ContentRoot();
+	if (root.empty())
+		return;
+
+	const fs::path rockDir = root / L"content" / L"models" / L"rock_07";
+	const fs::path diff = rockDir / L"textures" / L"rock_07_diff_1k.jpg";
+	const fs::path obj = rockDir / L"rock_07.obj";
+	if (fs::exists(obj) && fs::exists(diff))
+		return;
+
+	const fs::path script = root / L"tools" / L"download_rock07.ps1";
+	if (fs::exists(script))
+	{
+		_wsystem(
+			L"powershell -NoProfile -ExecutionPolicy Bypass -File tools/download_rock07.ps1");
+	}
+}
+
 void ObjTexturesDemoApp::LoadModelAndTextures()
 {
 	std::wstring err;
 	ObjMeshData rockData;
 	ObjMeshData sponzaData;
+	ObjMeshData cerberusData;
 	const wchar_t* kRockObjPath = L"content/models/rock_07/rock_07.obj";
 	const wchar_t* kSponzaObjPath = L"content/models/sponza/sponza.obj";
+	const std::wstring kCerberusObjPath = ResolveContentPath(L"Stuff/Cerberus_by_Andrew_Maximov/Cerberus_PBR.obj");
+
+	EnsureRockAssets();
 
 	if (!LoadWavefrontObj(kRockObjPath, rockData, err))
 	{
@@ -132,15 +283,41 @@ void ObjTexturesDemoApp::LoadModelAndTextures()
 		msg += L"\nRun: powershell -File tools/download_rock07.ps1";
 		throw DxException(E_FAIL, msg, AnsiToWString(__FILE__), __LINE__);
 	}
+	ApplyPipelineHints(rockData);
 	if (!LoadWavefrontObj(kSponzaObjPath, sponzaData, err))
 	{
 		std::wstring msg = err;
 		msg += L"\n\nExpected: content/models/sponza/sponza.obj (+ .mtl, textures/).";
 		throw DxException(E_FAIL, msg, AnsiToWString(__FILE__), __LINE__);
 	}
+	ApplyPipelineHints(sponzaData);
 
-	const UINT materialSlots =
-		static_cast<UINT>((rockData.Materials.size() + sponzaData.Materials.size()) * 3u);
+	EnsureCerberusAssets();
+
+	{
+		namespace fs = std::filesystem;
+		const fs::path texDir =
+			ContentRoot() / L"Stuff" / L"Cerberus_by_Andrew_Maximov" / L"Textures";
+		if (!fs::exists(texDir / L"Cerberus_A.jpg"))
+		{
+			std::wstring msg = L"Cerberus textures missing under Stuff/Cerberus_by_Andrew_Maximov/Textures/.";
+			msg += L"\nRun: powershell -File tools/setup_cerberus.ps1";
+			msg += L"\nOr extract Stuff/PBR models.zip";
+			throw DxException(E_FAIL, msg, AnsiToWString(__FILE__), __LINE__);
+		}
+	}
+
+	if (!LoadWavefrontObj(kCerberusObjPath.c_str(), cerberusData, err))
+	{
+		std::wstring msg = err;
+		msg += L"\n\nExpected: Stuff/Cerberus_by_Andrew_Maximov/Cerberus_PBR.obj";
+		msg += L"\nRun: powershell -File tools/setup_cerberus.ps1";
+		throw DxException(E_FAIL, msg, AnsiToWString(__FILE__), __LINE__);
+	}
+	ApplyPipelineHints(cerberusData);
+
+	const UINT materialSlots = static_cast<UINT>(
+		(rockData.Materials.size() + sponzaData.Materials.size() + cerberusData.Materials.size()) * 4u);
 	// После материалов в heap идут SRV G-buffer + structured buffer огней (RenderingSystem)
 	mDeferredSrvHeapBase = 1u + materialSlots;
 	const UINT srvCount = mDeferredSrvHeapBase + mRenderer.DeferredSrvDescriptorsNeeded();
@@ -155,20 +332,27 @@ void ObjTexturesDemoApp::LoadModelAndTextures()
 	UINT nextSlot = 1u;
 	const std::unordered_map<std::string, int> rockMatToSrvBase = LoadMaterialTextureSets(rockData, nextSlot);
 	const std::unordered_map<std::string, int> sponzaMatToSrvBase = LoadMaterialTextureSets(sponzaData, nextSlot);
+	const std::unordered_map<std::string, int> cerberusMatToSrvBase = LoadMaterialTextureSets(cerberusData, nextSlot);
 
 	mRockGeo = BuildModelGeometry(rockData, "RockModel");
 	mSceneGeo = BuildModelGeometry(sponzaData, "SponzaModel");
+	mPropGeo = BuildModelGeometry(cerberusData, "CerberusProp");
 	mRockSubmeshes = BuildDrawSubmeshes(rockData, rockMatToSrvBase);
 	mSceneSubmeshes = BuildDrawSubmeshes(sponzaData, sponzaMatToSrvBase);
+	mPropSubmeshes = BuildDrawSubmeshes(cerberusData, cerberusMatToSrvBase);
 
 	const Aabb sponzaLocalBounds = ComputeMeshLocalBounds(sponzaData);
 	mSponzaWorldBounds = sponzaLocalBounds;
 	mSceneWorldBounds = sponzaLocalBounds;
-	mRenderer.SetParticleEmitter({
-		(sponzaLocalBounds.Min.x + sponzaLocalBounds.Max.x) * 0.5f,
-		(sponzaLocalBounds.Min.y + sponzaLocalBounds.Max.y) * 0.5f,
-		(sponzaLocalBounds.Min.z + sponzaLocalBounds.Max.z) * 0.5f
-	});
+	if (!ComputeSponzaCourtyardAnchor(sponzaData, mCourtyardAnchor))
+	{
+		mCourtyardAnchor = {
+			(sponzaLocalBounds.Min.x + sponzaLocalBounds.Max.x) * 0.5f,
+			sponzaLocalBounds.Min.y,
+			(sponzaLocalBounds.Min.z + sponzaLocalBounds.Max.z) * 0.5f
+		};
+	}
+	mRenderer.SetParticleEmitter(mCourtyardAnchor);
 
 	// Масштаб камня под размер Sponza (чтобы не перекрывать целые арки/стены).
 	const Aabb rockLocalBounds = ComputeMeshLocalBounds(rockData);
@@ -178,32 +362,56 @@ void ObjTexturesDemoApp::LoadModelAndTextures()
 	const float sponzaExtent = (std::max)(
 		(std::max)(sponzaLocalBounds.Max.x - sponzaLocalBounds.Min.x, sponzaLocalBounds.Max.y - sponzaLocalBounds.Min.y),
 		sponzaLocalBounds.Max.z - sponzaLocalBounds.Min.z);
-	const float rockTarget = (std::max)(2.0f, sponzaExtent * 0.03f);
+	const float rockTarget = (std::max)(4.0f, sponzaExtent * 0.04f);
 	const float rockScale = (rockExtent > 1e-5f) ? (rockTarget / rockExtent) : 1.0f;
+	const float instanceSpacing = (std::max)(rockTarget * 1.08f, 10.0f);
 
-	const XMVECTOR rockCenter = XMVectorSet(
-		(rockLocalBounds.Min.x + rockLocalBounds.Max.x) * 0.5f,
-		(rockLocalBounds.Min.y + rockLocalBounds.Max.y) * 0.5f,
-		(rockLocalBounds.Min.z + rockLocalBounds.Max.z) * 0.5f,
-		1.0f);
-	const float sponzaCenterX = (sponzaLocalBounds.Min.x + sponzaLocalBounds.Max.x) * 0.5f;
-	const float sponzaCenterZ = (sponzaLocalBounds.Min.z + sponzaLocalBounds.Max.z) * 0.5f;
-	const float sponzaFloorY = sponzaLocalBounds.Min.y;
+	const float courtyardX = mCourtyardAnchor.x;
+	const float courtyardY = mCourtyardAnchor.y;
+	const float courtyardZ = mCourtyardAnchor.z;
 
-	const XMMATRIX rockBase =
-		XMMatrixTranslation(-XMVectorGetX(rockCenter), -XMVectorGetY(rockCenter), -XMVectorGetZ(rockCenter)) *
-		XMMatrixScaling(rockScale, rockScale, rockScale) *
-		XMMatrixTranslation(sponzaCenterX, sponzaFloorY + 0.15f, sponzaCenterZ);
-	XMFLOAT4X4 rockBaseWorld = MathUtils::Identity4x4();
-	XMStoreFloat4x4(&rockBaseWorld, rockBase);
+	// Камни на крыше Sponza (низ меша = верх AABB здания + зазор).
+	const float rockFloorY = sponzaLocalBounds.Max.y + kRockClearanceAboveSponzaTop;
+	mRockClusterCenterY = rockFloorY + rockTarget * 0.55f;
+
 	mMeshLocalBounds = rockLocalBounds;
-	BuildSceneInstances(rockBaseWorld, rockLocalBounds);
+	BuildSceneInstances(
+		rockLocalBounds,
+		rockScale,
+		rockFloorY,
+		{courtyardX, courtyardY, courtyardZ},
+		instanceSpacing);
+
+	const Aabb cerberusLocalBounds = ComputeMeshLocalBounds(cerberusData);
+	const float cerberusExtent = (std::max)(
+		(std::max)(cerberusLocalBounds.Max.x - cerberusLocalBounds.Min.x,
+			cerberusLocalBounds.Max.y - cerberusLocalBounds.Min.y),
+		cerberusLocalBounds.Max.z - cerberusLocalBounds.Min.z);
+	const float cerberusTarget = (std::max)(4.0f, sponzaExtent * 0.04f);
+	const float cerberusScale = (cerberusExtent > 1e-5f) ? (cerberusTarget / cerberusExtent) : 1.0f;
+	const XMFLOAT3 cerberusAnchor = {
+		courtyardX,
+		ComputeSponzaSecondFloorY(sponzaLocalBounds),
+		courtyardZ};
+	const XMMATRIX propWorld =
+		ComposeWorldOnFloor(cerberusLocalBounds, cerberusScale, XM_PI * 0.5f, cerberusAnchor);
+	XMStoreFloat4x4(&mPropWorld, propWorld);
+	mPropWorldBounds = TransformAabb(cerberusLocalBounds, propWorld);
+	mSceneWorldBounds.Merge(mPropWorldBounds);
+
+	mShadowSceneBounds = mSponzaWorldBounds;
+	mShadowSceneBounds.Merge(mPropWorldBounds);
+
 	FitCameraToScene();
 }
 
-void ObjTexturesDemoApp::BuildSceneInstances(const XMFLOAT4X4& baseWorld, const Aabb& localBounds)
+void ObjTexturesDemoApp::BuildSceneInstances(
+	const Aabb& localBounds,
+	float rockScale,
+	float floorY,
+	const XMFLOAT3& gridCenter,
+	float instanceSpacing)
 {
-	const XMMATRIX base = XMLoadFloat4x4(&baseWorld);
 	mInstances.clear();
 	mInstances.reserve(static_cast<size_t>(kInstanceGridX * kInstanceGridZ));
 
@@ -211,12 +419,12 @@ void ObjTexturesDemoApp::BuildSceneInstances(const XMFLOAT4X4& baseWorld, const 
 	{
 		for (int ix = 0; ix < kInstanceGridX; ++ix)
 		{
-			const float ox = (static_cast<float>(ix) - (kInstanceGridX - 1) * 0.5f) * kInstanceSpacing;
-			const float oz = (static_cast<float>(iz) - (kInstanceGridZ - 1) * 0.5f) * kInstanceSpacing;
+			const float ox = (static_cast<float>(ix) - (kInstanceGridX - 1) * 0.5f) * instanceSpacing;
+			const float oz = (static_cast<float>(iz) - (kInstanceGridZ - 1) * 0.5f) * instanceSpacing;
 			const float yaw = static_cast<float>((ix * 17 + iz * 31) % 360) * (XM_PI / 180.f);
 
-			const XMMATRIX world =
-				XMMatrixRotationY(yaw) * XMMatrixTranslation(ox, 0.f, oz) * base;
+			const XMFLOAT3 anchor = {gridCenter.x + ox, floorY, gridCenter.z + oz};
+			const XMMATRIX world = ComposeWorldOnFloor(localBounds, rockScale, yaw, anchor);
 
 			SceneInstance inst{};
 			XMStoreFloat4x4(&inst.World, world);
@@ -249,17 +457,13 @@ void ObjTexturesDemoApp::BuildSceneOctree()
 
 void ObjTexturesDemoApp::FitCameraToScene()
 {
-	const Aabb& fit = mSponzaWorldBounds.IsValid() ? mSponzaWorldBounds : mSceneWorldBounds;
-	const float spanX = fit.Max.x - fit.Min.x;
-	const float spanZ = fit.Max.z - fit.Min.z;
-	const float spanY = (std::max)(fit.Max.y - fit.Min.y, 1.0f);
-	const float sceneSpan = (std::max)((std::max)(spanX, spanZ), 1.0f);
-	const float dist = (std::min)((std::max)(sceneSpan * 0.38f, 28.0f), 85.0f);
+	const float cx = mCourtyardAnchor.x;
+	const float cz = mCourtyardAnchor.z;
+	const float cameraY = mCourtyardAnchor.y + 8.0f;
+	const float dist = 95.0f;
 
-	const float cx = (fit.Min.x + fit.Max.x) * 0.5f;
-	const float cz = (fit.Min.z + fit.Max.z) * 0.5f;
-
-	mCameraPos = {cx, fit.Min.y + spanY * 0.35f + 6.0f, cz - dist};
+	// Взгляд в центр двора (Cerberus, стены), не вверх на камни — иначе в кадре только небо.
+	mCameraPos = {cx, cameraY, cz - dist};
 	mYaw = 0.f;
 	mPitch = 0.12f;
 	mSkipNextMouseLook = true;

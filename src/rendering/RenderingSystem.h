@@ -11,6 +11,7 @@
 
 #include "CascadedShadowMaps.h"
 #include "GBuffer.h"
+#include "PostProcess.h"
 #include "GpuLightStructures.h"
 #include "ShadowStructures.h"
 #include "../particles/ParticleTypes.h"
@@ -21,6 +22,7 @@
 #include <d3dcompiler.h>
 #include <dxgi.h>
 #include <memory>
+#include <vector>
 #include <wrl/client.h>
 
 class RenderingSystem
@@ -31,6 +33,8 @@ public:
 	RenderingSystem& operator=(const RenderingSystem&) = delete;
 
 	void Initialize(ID3D12Device* device, DXGI_FORMAT backBufferFormat);
+	void LoadIblTextures(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList);
+	void ClearIblUploadHeaps();
 	void ResizeGBuffer(ID3D12Device* device, UINT width, UINT height);
 
 	void CreateDeferredSrvs(
@@ -39,13 +43,19 @@ public:
 		UINT descriptorIncrementSize,
 		ID3D12DescriptorHeap* shaderVisibleSrvHeap);
 
-	UINT DeferredSrvDescriptorsNeeded() const { return GBuffer::kRtCount + 2u; }
+	UINT DeferredSrvDescriptorsNeeded() const
+	{
+		return GBuffer::kRtCount + 2u + kIblSrvCount + PostProcess::kSrvCount;
+	}
+
+	static constexpr UINT kIblSrvCount = 3u;
 
 	GBuffer* GetGBuffer() { return &m_gbuffer; }
 	const GBuffer* GetGBuffer() const { return &m_gbuffer; }
 
 	// Bytecode Lab 3 — entry points в deferred_tessellation.hlsl
 	Microsoft::WRL::ComPtr<ID3DBlob> TessVsByteCode() const { return m_tessVsBc; }
+	Microsoft::WRL::ComPtr<ID3DBlob> TessSolidVsByteCode() const { return m_tessSolidVsBc; }
 	Microsoft::WRL::ComPtr<ID3DBlob> TessHsByteCode() const { return m_tessHsBc; }
 	Microsoft::WRL::ComPtr<ID3DBlob> TessDsByteCode() const { return m_tessDsBc; }
 	Microsoft::WRL::ComPtr<ID3DBlob> TessPsByteCode() const { return m_tessPsBc; }
@@ -99,14 +109,33 @@ public:
 	void UpdateParticles(ID3D12GraphicsCommandList* cmd, float deltaTime);
 	void DrawParticles(
 		ID3D12GraphicsCommandList* cmd,
-		D3D12_CPU_DESCRIPTOR_HANDLE backBufferRtv,
+		D3D12_CPU_DESCRIPTOR_HANDLE colorTargetRtv,
 		D3D12_CPU_DESCRIPTOR_HANDLE sceneDepthDsv,
+		bool useGBufferDepth,
 		const D3D12_VIEWPORT& viewport,
 		const D3D12_RECT& scissor,
 		DirectX::CXMMATRIX view,
 		DirectX::CXMMATRIX proj,
 		DirectX::FXMVECTOR cameraRight,
 		DirectX::FXMVECTOR cameraUp);
+
+	D3D12_CPU_DESCRIPTOR_HANDLE SceneColorRtv() const { return m_post.SceneRtv(); }
+	bool UsesSceneColorTarget() const { return m_postVignetteEnabled || m_postChromaticEnabled; }
+	void SetPostVignetteEnabled(bool enabled) { m_postVignetteEnabled = enabled; }
+	void SetPostChromaticEnabled(bool enabled) { m_postChromaticEnabled = enabled; }
+	bool PostVignetteEnabled() const { return m_postVignetteEnabled; }
+	bool PostChromaticEnabled() const { return m_postChromaticEnabled; }
+
+	void RunPostProcess(
+		ID3D12GraphicsCommandList* cmd,
+		ID3D12Resource* backBuffer,
+		D3D12_RESOURCE_STATES backBufferStateBefore,
+		ID3D12DescriptorHeap* srvHeap,
+		UINT deferredSrvHeapBase,
+		UINT srvDescriptorIncrement,
+		D3D12_CPU_DESCRIPTOR_HANDLE backBufferRtv,
+		const D3D12_VIEWPORT& viewport,
+		const D3D12_RECT& scissor);
 
 private:
 	void BuildLightingPipeline(ID3D12Device* device);
@@ -116,8 +145,12 @@ private:
 	void BuildParticleDrawPipeline(ID3D12Device* device);
 
 	GBuffer m_gbuffer{};
+	PostProcess m_post{};
+	bool m_postVignetteEnabled = true;
+	bool m_postChromaticEnabled = true;
 
 	Microsoft::WRL::ComPtr<ID3DBlob> m_tessVsBc;
+	Microsoft::WRL::ComPtr<ID3DBlob> m_tessSolidVsBc;
 	Microsoft::WRL::ComPtr<ID3DBlob> m_tessHsBc;
 	Microsoft::WRL::ComPtr<ID3DBlob> m_tessDsBc;
 	Microsoft::WRL::ComPtr<ID3DBlob> m_tessPsBc;
@@ -144,6 +177,15 @@ private:
 	bool m_gbIsSrvReadable = false;
 	DXGI_FORMAT m_lightingRtFormat = DXGI_FORMAT_UNKNOWN;
 
+	Microsoft::WRL::ComPtr<ID3D12Resource> m_iblIrradiance;
+	Microsoft::WRL::ComPtr<ID3D12Resource> m_iblPrefilteredEnv;
+	Microsoft::WRL::ComPtr<ID3D12Resource> m_iblIntegrationMap;
+	bool m_iblIrradianceIsCubemap = false;
+	bool m_iblPrefilterIsCubemap = false;
+	bool m_iblIntegrationIsCubemap = false;
+	std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> m_iblUploadHeaps;
+	float m_iblMaxEnvMipLevel = 4.0f;
+
 	// Lab 5 particle simulation (Append/Consume ping-pong).
 	UINT m_particleMaxCount = 0;
 	UINT m_particlePingPong = 0;
@@ -156,6 +198,7 @@ private:
 	Microsoft::WRL::ComPtr<ID3D12RootSignature> m_rsParticleDraw;
 	Microsoft::WRL::ComPtr<ID3D12PipelineState> m_psoParticleCompute;
 	Microsoft::WRL::ComPtr<ID3D12PipelineState> m_psoParticleDraw;
+	Microsoft::WRL::ComPtr<ID3D12PipelineState> m_psoParticleDrawNoDepth;
 	std::unique_ptr<GpuUploadBuffer<ParticleSimConstants>> m_particleSimCb;
 	std::unique_ptr<GpuUploadBuffer<ParticleDrawConstants>> m_particleDrawCb;
 

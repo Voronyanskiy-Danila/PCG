@@ -14,10 +14,14 @@ HRESULT LoadTextureImageFromFile12(
 	ID3D12GraphicsCommandList* cmdList,
 	const wchar_t* filePath,
 	ComPtr<ID3D12Resource>& texture,
-	ComPtr<ID3D12Resource>& textureUploadHeap)
+	ComPtr<ID3D12Resource>& textureUploadHeap,
+	bool* isCubemapOut)
 {
 	if (!device || !cmdList || !filePath)
 		return E_INVALIDARG;
+
+	if (isCubemapOut)
+		*isCubemapOut = false;
 
 	texture.Reset();
 	textureUploadHeap.Reset();
@@ -32,12 +36,19 @@ HRESULT LoadTextureImageFromFile12(
 	if (FAILED(hr))
 		return hr;
 
+	if (isCubemapOut)
+		*isCubemapOut = metadata.IsCubemap() != 0;
+
 	D3D12_RESOURCE_DESC texDesc{};
-	texDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+	if (metadata.dimension == TEX_DIMENSION_TEXTURE3D)
+		texDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE3D;
+	else
+		texDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
 	texDesc.Alignment = 0;
 	texDesc.Width = metadata.width;
 	texDesc.Height = static_cast<UINT>(metadata.height);
-	texDesc.DepthOrArraySize = static_cast<UINT16>(metadata.arraySize);
+	texDesc.DepthOrArraySize = static_cast<UINT16>(
+		metadata.dimension == TEX_DIMENSION_TEXTURE3D ? metadata.depth : metadata.arraySize);
 	texDesc.MipLevels = static_cast<UINT16>(metadata.mipLevels);
 	texDesc.Format = metadata.format;
 	texDesc.SampleDesc.Count = 1;
@@ -56,8 +67,9 @@ HRESULT LoadTextureImageFromFile12(
 	if (FAILED(hr))
 		return hr;
 
-	const UINT numSubresources = texDesc.DepthOrArraySize * texDesc.MipLevels;
-	const UINT64 uploadBufferSize = GetRequiredIntermediateSize(texture.Get(), 0, numSubresources);
+	const UINT subresourceCount = static_cast<UINT>(metadata.mipLevels) *
+		static_cast<UINT>(metadata.dimension == TEX_DIMENSION_TEXTURE3D ? metadata.depth : metadata.arraySize);
+	const UINT64 uploadBufferSize = GetRequiredIntermediateSize(texture.Get(), 0, subresourceCount);
 
 	CD3DX12_HEAP_PROPERTIES uploadHeapProps(D3D12_HEAP_TYPE_UPLOAD);
 	CD3DX12_RESOURCE_DESC bufferDesc = CD3DX12_RESOURCE_DESC::Buffer(uploadBufferSize);
@@ -92,7 +104,7 @@ HRESULT LoadTextureImageFromFile12(
 		cmdList->ResourceBarrier(1, &barrier);
 	}
 
-	UpdateSubresources(cmdList, texture.Get(), textureUploadHeap.Get(), 0, 0, numSubresources, subresources.data());
+	UpdateSubresources(cmdList, texture.Get(), textureUploadHeap.Get(), 0, 0, subresourceCount, subresources.data());
 
 	{
 		auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(

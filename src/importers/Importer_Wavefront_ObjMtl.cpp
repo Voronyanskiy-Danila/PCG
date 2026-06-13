@@ -98,11 +98,65 @@ bool ParseMtlFile(const fs::path& mtlPath, std::unordered_map<std::string, MtlMa
 			if (!texRel.empty())
 				materials[activeMtlName].NormalTexturePath = (mtlPath.parent_path() / texRel).wstring();
 		}
-		else if ((tag == "map_disp" || tag == "map_Displacement") && !activeMtlName.empty() && parts.size() >= 2)
+		else if ((tag == "map_disp" || tag == "map_Disp" || tag == "map_Displacement") &&
+			!activeMtlName.empty() && parts.size() >= 2)
+		{
+			fs::path texRel = fs::path(Trim(parts[1])).lexically_normal();
+			if (texRel.empty())
+				continue;
+
+			const fs::path resolved = mtlPath.parent_path() / texRel;
+			std::string relLower = texRel.generic_string();
+			std::transform(relLower.begin(), relLower.end(), relLower.begin(), [](unsigned char c) {
+				return static_cast<char>(std::tolower(c));
+			});
+			const bool looksLikeNormalMap =
+				relLower.find("ddn") != std::string::npos ||
+				relLower.find("_nor") != std::string::npos ||
+				relLower.find("_normal") != std::string::npos;
+
+			// Crytek Sponza: map_Disp часто указывает на *_ddn.tga (normal), не height.
+			if (looksLikeNormalMap && materials[activeMtlName].NormalTexturePath.empty())
+				materials[activeMtlName].NormalTexturePath = resolved.wstring();
+			else
+				materials[activeMtlName].DisplacementTexturePath = resolved.wstring();
+		}
+		else if (
+			(tag == "map_ARM" || tag == "map_arm") &&
+			!activeMtlName.empty() &&
+			parts.size() >= 2)
 		{
 			fs::path texRel = fs::path(Trim(parts[1])).lexically_normal();
 			if (!texRel.empty())
-				materials[activeMtlName].DisplacementTexturePath = (mtlPath.parent_path() / texRel).wstring();
+				materials[activeMtlName].RmTexturePath = (mtlPath.parent_path() / texRel).wstring();
+		}
+		else if (
+			(tag == "map_Pr" || tag == "map_roughness") && !activeMtlName.empty() && parts.size() >= 2)
+		{
+			fs::path texRel = fs::path(Trim(parts[1])).lexically_normal();
+			if (!texRel.empty())
+				materials[activeMtlName].RmTexturePath = (mtlPath.parent_path() / texRel).wstring();
+		}
+		else if (tag == "Pr" && !activeMtlName.empty() && parts.size() >= 2)
+		{
+			materials[activeMtlName].RoughnessFactor = std::stof(parts[1]);
+		}
+		else if (tag == "Pm" && !activeMtlName.empty() && parts.size() >= 2)
+		{
+			materials[activeMtlName].MetallicFactor = std::stof(parts[1]);
+			materials[activeMtlName].HasMetallicFactor = true;
+		}
+		else if (tag == "PcUv" && !activeMtlName.empty() && parts.size() >= 3)
+		{
+			materials[activeMtlName].UvScale = XMFLOAT2(std::stof(parts[1]), std::stof(parts[2]));
+		}
+		else if (tag == "PcNormalFlip" && !activeMtlName.empty() && parts.size() >= 2)
+		{
+			materials[activeMtlName].NormalFlipY = std::stof(parts[1]) > 0.5f;
+		}
+		else if (tag == "PcSkipNormal" && !activeMtlName.empty() && parts.size() >= 2)
+		{
+			materials[activeMtlName].SkipNormalMap = std::stof(parts[1]) > 0.5f;
 		}
 	}
 

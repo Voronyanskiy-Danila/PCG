@@ -41,6 +41,13 @@ public:
 		const D3D_SHADER_MACRO* defines,
 		const std::string& entrypoint,
 		const std::string& target);
+
+	// isCubemap: явный cubemap SRV (из DirectXTex metadata); иначе — по desc ресурса
+	static void CreateTextureSrv(
+		ID3D12Device* device,
+		ID3D12Resource* tex,
+		D3D12_CPU_DESCRIPTOR_HANDLE dst,
+		bool isCubemap = false);
 };
 
 class DxException

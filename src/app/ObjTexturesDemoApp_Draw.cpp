@@ -1,5 +1,5 @@
 // =============================================================================
-// ObjTexturesDemoApp_Draw.cpp — кадр: G-buffer → lighting → particles (Lab 5)
+// ObjTexturesDemoApp_Draw.cpp — кадр: G-buffer → lighting → particles → post (Lab 7)
 // =============================================================================
 
 #include "ObjTexturesDemoApp.h"
@@ -19,22 +19,45 @@ void ObjTexturesDemoApp::Draw(const FrameTimer& gt)
 	ID3D12DescriptorHeap* heaps[] = {mSrvHeap.Get()};
 	mCommandList->SetDescriptorHeaps(static_cast<UINT>(_countof(heaps)), heaps);
 	RunDeferredGeometryPass();
-	RunDeferredLightingPass();      // Lab 2: чтение G-buffer → экран (backbuffer остается RT)
+	RunDeferredLightingPass();
+	const D3D12_CPU_DESCRIPTOR_HANDLE colorRtv =
+		mRenderer.UsesSceneColorTarget()
+			? mRenderer.SceneColorRtv()
+			: CurrentBackBufferView();
+
 	const XMMATRIX view = XMLoadFloat4x4(&mView);
 	const XMMATRIX proj = XMLoadFloat4x4(&mProj);
 	const XMMATRIX invView = XMMatrixInverse(nullptr, view);
 	const XMVECTOR cameraRight = XMVector3Normalize(invView.r[0]);
 	const XMVECTOR cameraUp = XMVector3Normalize(invView.r[1]);
+	const bool usePostSceneRt = mRenderer.UsesSceneColorTarget();
 	mRenderer.DrawParticles(
 		mCommandList.Get(),
-		CurrentBackBufferView(),
+		colorRtv,
 		mRenderer.GetGBuffer()->DsvCpu(),
+		!usePostSceneRt,
 		mScreenViewport,
 		mScissorRect,
 		view,
 		proj,
 		cameraRight,
 		cameraUp);
+
+	if (usePostSceneRt)
+	{
+		mCommandList->SetDescriptorHeaps(1u, heaps);
+		mRenderer.RunPostProcess(
+			mCommandList.Get(),
+			CurrentBackBuffer(),
+			D3D12_RESOURCE_STATE_PRESENT,
+			mSrvHeap.Get(),
+			mDeferredSrvHeapBase,
+			mCbvSrvUavDescriptorSize,
+			CurrentBackBufferView(),
+			mScreenViewport,
+			mScissorRect);
+	}
+
 	UpdateWindowCaption();
 
 	SubmitCommandListPresentAndFlush(); // Execute, Present, sync
@@ -86,19 +109,22 @@ void ObjTexturesDemoApp::RunShadowPass()
 	XMFLOAT3 camForward{};
 	XMStoreFloat3(&camForward, CameraForwardNormalized());
 
+	const Aabb& shadowBounds =
+		mShadowSceneBounds.IsValid() ? mShadowSceneBounds : mSponzaWorldBounds;
 	mRenderer.UpdateShadowCascades(
 		view,
 		proj,
 		mDirLightW,
 		mCameraPos,
 		camForward,
-		mSceneWorldBounds,
+		shadowBounds,
 		kCameraNearZ,
 		kCameraFarZ,
 		kCameraFovYRad,
 		AspectRatio());
 
 	const UINT shadowDrawsNeeded = CountShadowDrawCalls();
+	mShadowDrawCallsNeeded = shadowDrawsNeeded;
 	mShadowDrawOverflow = shadowDrawsNeeded > kMaxShadowDrawCalls;
 	mShadowDrawSlotsUsed = 0u;
 
@@ -153,13 +179,8 @@ void ObjTexturesDemoApp::RunShadowPass()
 		if (mShadowDrawSponza && mSceneGeo && !mSceneSubmeshes.empty())
 			drawModelShadow(*mSceneGeo, mSceneSubmeshes, XMMatrixIdentity(), cascade);
 
-		for (uint32_t instIdx : mShadowCastInstances)
-		{
-			const SceneInstance& inst = mInstances[instIdx];
-			const XMMATRIX world = XMLoadFloat4x4(&inst.World);
-			if (mRockGeo && !mRockSubmeshes.empty())
-				drawModelShadow(*mRockGeo, mRockSubmeshes, world, cascade);
-		}
+		if (mPropGeo && !mPropSubmeshes.empty())
+			drawModelShadow(*mPropGeo, mPropSubmeshes, XMLoadFloat4x4(&mPropWorld), cascade);
 	}
 
 	mShadowDrawSlotsUsed = shadowCbSlot;
@@ -174,10 +195,7 @@ void ObjTexturesDemoApp::RunDeferredGeometryPass()
 {
 	ID3D12GraphicsCommandList* const cmd = mCommandList.Get();
 
-	const bool wireframe = (mTessDebugMode == 2);          // debug: каркас тесселированных треугольников
-	cmd->SetPipelineState(
-		wireframe ? mDeferredGeoWirePSO.Get() : mDeferredGeoPSO.Get()); // VS+HS+DS+PS tess
-	cmd->SetGraphicsRootSignature(mRootSignature.Get()); // b0=CBV, table=t0,t1,t2
+	cmd->SetGraphicsRootSignature(mRootSignature.Get()); // b0=CBV, table=t0..t3
 
 	const UINT srvIncr = mCbvSrvUavDescriptorSize;       // размер одного descriptor в heap
 	const CD3DX12_GPU_DESCRIPTOR_HANDLE srvBase{mSrvHeap->GetGPUDescriptorHandleForHeapStart()};
@@ -185,28 +203,44 @@ void ObjTexturesDemoApp::RunDeferredGeometryPass()
 	const XMMATRIX view = XMLoadFloat4x4(&mView);
 	const XMMATRIX proj = XMLoadFloat4x4(&mProj);
 	UINT cbSlot = 0u;
+	mGeometryDrawOverflow = false;
 
-	auto drawModel = [&](const MeshGeometry& geo,
-						 const std::vector<DrawSubmesh>& submeshes,
-						 CXMMATRIX world) {
+	auto drawSubmeshes = [&](const MeshGeometry& geo,
+							 const std::vector<DrawSubmesh>& submeshes,
+							 CXMMATRIX world,
+							 D3D12_PRIMITIVE_TOPOLOGY topology,
+							 const ObjectConstants* baseConstants = nullptr) {
+		if (mGeometryDrawOverflow)
+			return;
+
 		const D3D12_VERTEX_BUFFER_VIEW vbv = geo.VertexBufferView();
 		const D3D12_INDEX_BUFFER_VIEW ibv = geo.IndexBufferView();
 		cmd->IASetVertexBuffers(0u, 1u, &vbv);
 		cmd->IASetIndexBuffer(&ibv);
-		cmd->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_3_CONTROL_POINT_PATCHLIST);
+		cmd->IASetPrimitiveTopology(topology);
 
 		const XMMATRIX wvp = world * view * proj;
 		for (const DrawSubmesh& sm : submeshes)
 		{
-			ObjectConstants per = mSharedConstants;
+			if (cbSlot >= kMaxObjectDrawCalls)
+			{
+				mGeometryDrawOverflow = true;
+				return;
+			}
+
+			ObjectConstants per = baseConstants ? *baseConstants : mSharedConstants;
 			XMStoreFloat4x4(&per.World, XMMatrixTranspose(world));
 			XMStoreFloat4x4(&per.WorldInvTranspose, XMMatrixTranspose(MathUtils::InverseTranspose(world)));
 			XMStoreFloat4x4(&per.WorldViewProj, XMMatrixTranspose(wvp));
 			per.MatKd = sm.Kd;
-			per.MatKs = sm.Ks;
-			per.MatNs = sm.Ns;
+			per.MatRoughness = sm.Roughness;
+			per.MatMetallic = sm.Metallic;
+			per.MatNsFallback = sm.NsFallback;
 			per.HasDiffuseTexture = sm.HasDiffuseTexture ? 1.f : 0.f;
 			per.HasNormalTexture = sm.HasNormalTexture ? 1.f : 0.f;
+			per.HasRmTexture = sm.HasRmTexture ? 1.f : 0.f;
+			per.NormalFlipY = sm.NormalFlipY ? 1.f : 0.f;
+			per.UvScale = sm.UvScale;
 
 			mObjectCB->CopyData(static_cast<int>(cbSlot), per);
 			const UINT64 cbGpu = mObjectCB->Resource()->GetGPUVirtualAddress() +
@@ -222,15 +256,51 @@ void ObjTexturesDemoApp::RunDeferredGeometryPass()
 		}
 	};
 
+	cmd->SetPipelineState(mDeferredGeoSolidPSO.Get());
 	if (mSceneGeo && !mSceneSubmeshes.empty())
-		drawModel(*mSceneGeo, mSceneSubmeshes, XMMatrixIdentity());
-
-	for (uint32_t instIdx : mVisibleInstances)
 	{
-		const SceneInstance& inst = mInstances[instIdx];
-		const XMMATRIX world = XMLoadFloat4x4(&inst.World);
-		if (mRockGeo && !mRockSubmeshes.empty())
-			drawModel(*mRockGeo, mRockSubmeshes, world);
+		drawSubmeshes(
+			*mSceneGeo,
+			mSceneSubmeshes,
+			XMMatrixIdentity(),
+			D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+	}
+
+	if (mPropGeo && !mPropSubmeshes.empty())
+	{
+		drawSubmeshes(
+			*mPropGeo,
+			mPropSubmeshes,
+			XMLoadFloat4x4(&mPropWorld),
+			D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+	}
+
+	// Камни: tess + displacement, double-sided (Lab 3)
+	if (mRockGeo && !mRockSubmeshes.empty())
+	{
+		ID3D12PipelineState* rockPso = mDeferredGeoRockPSO.Get();
+		if (mTessDebugMode == 2)
+			rockPso = mDeferredGeoWirePSO.Get();
+
+		cmd->SetPipelineState(rockPso);
+		ObjectConstants rockCb = mSharedConstants;
+		rockCb.DispScale = 0.02f;
+		rockCb.MinTess = 1.0f;
+		rockCb.MaxTess = 5.0f;
+		rockCb.TessNear = 50.0f;
+		rockCb.TessFar = 320.0f;
+		rockCb.DebugMode = static_cast<float>(mTessDebugMode);
+
+		for (uint32_t visIdx : mVisibleInstances)
+		{
+			const SceneInstance& inst = mInstances[visIdx];
+			drawSubmeshes(
+				*mRockGeo,
+				mRockSubmeshes,
+				XMLoadFloat4x4(&inst.World),
+				D3D_PRIMITIVE_TOPOLOGY_3_CONTROL_POINT_PATCHLIST,
+				&rockCb);
+		}
 	}
 }
 
@@ -238,24 +308,32 @@ void ObjTexturesDemoApp::RunDeferredLightingPass()
 {
 	ID3D12GraphicsCommandList* const cmd = mCommandList.Get();
 
-	mRenderer.TransitionGbufferToPixelShader(cmd);         // RT G-buffer → SRV для PS_Light
+	mRenderer.TransitionGbufferToPixelShader(cmd);
 
-	CD3DX12_RESOURCE_BARRIER toRt = CD3DX12_RESOURCE_BARRIER::Transition(
-		CurrentBackBuffer(),
-		D3D12_RESOURCE_STATE_PRESENT,
-		D3D12_RESOURCE_STATE_RENDER_TARGET);
-	cmd->ResourceBarrier(1u, &toRt);                       // back buffer можно рисовать
+	const bool useSceneRt = mRenderer.UsesSceneColorTarget();
+	D3D12_CPU_DESCRIPTOR_HANDLE litRtv = CurrentBackBufferView();
+	if (useSceneRt)
+	{
+		litRtv = mRenderer.SceneColorRtv();
+	}
+	else
+	{
+		CD3DX12_RESOURCE_BARRIER toRt = CD3DX12_RESOURCE_BARRIER::Transition(
+			CurrentBackBuffer(),
+			D3D12_RESOURCE_STATE_PRESENT,
+			D3D12_RESOURCE_STATE_RENDER_TARGET);
+		cmd->ResourceBarrier(1u, &toRt);
+	}
 
-	const D3D12_CPU_DESCRIPTOR_HANDLE bbRtv = CurrentBackBufferView();
-	cmd->OMSetRenderTargets(1u, &bbRtv, false, nullptr);   // один RT = swap chain
-	cmd->ClearRenderTargetView(bbRtv, Colors::Black, 0, nullptr);
+	cmd->OMSetRenderTargets(1u, &litRtv, false, nullptr);
+	cmd->ClearRenderTargetView(litRtv, Colors::Black, 0, nullptr);
 
 	mRenderer.UpdateLightingFrameConstants(
 		md3dDevice.Get(),
 		mCameraPos,
 		mDirLightW,
 		XMFLOAT3(1.f, 0.98f, 0.92f),
-		4.0f);
+		kDirLightIntensity);
 
 	mRenderer.SetLightingPipeline(cmd);
 	cmd->SetGraphicsRootConstantBufferView(0u, mRenderer.LightingCb().Resource()->GetGPUVirtualAddress());

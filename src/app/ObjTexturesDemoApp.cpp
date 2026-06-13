@@ -7,8 +7,55 @@
 #include "../rendering/d3d12/D3d12_RenderHelpers.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
+
+namespace
+{
+std::filesystem::path FindContentRoot(const std::filesystem::path& exeDir)
+{
+	std::filesystem::path fallback = exeDir;
+	std::filesystem::path dir = exeDir;
+	for (int i = 0; i < 10; ++i)
+	{
+		const bool hasContent = std::filesystem::exists(dir / L"content" / L"models");
+		const bool hasStuff = std::filesystem::exists(dir / L"Stuff");
+		if (hasContent && hasStuff)
+			return dir;
+		if (hasContent)
+			fallback = dir;
+		if (!dir.has_parent_path())
+			break;
+		dir = dir.parent_path();
+	}
+	return fallback;
+}
+} // namespace
+
+std::filesystem::path ObjTexturesDemoApp::s_contentRoot = {};
+
+void ObjTexturesDemoApp::SetContentRoot(const std::filesystem::path& root)
+{
+	s_contentRoot = root;
+	std::error_code ec;
+	std::filesystem::current_path(s_contentRoot, ec);
+}
+
+const std::filesystem::path& ObjTexturesDemoApp::ContentRoot()
+{
+	return s_contentRoot;
+}
+
+std::wstring ObjTexturesDemoApp::ResolveContentPath(const wchar_t* relativePath)
+{
+	if (!relativePath || relativePath[0] == L'\0')
+		return {};
+	if (s_contentRoot.empty())
+		return relativePath;
+	return (s_contentRoot / relativePath).wstring();
+}
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE prevInstance,
 				   PSTR cmdLine, int showCmd)
@@ -24,11 +71,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE prevInstance,
 	wchar_t modulePath[MAX_PATH] = {};
 	if (GetModuleFileNameW(nullptr, modulePath, MAX_PATH))
 	{
-		std::filesystem::path p(modulePath);
-		std::error_code ec;
-		std::filesystem::current_path(p.parent_path(), ec);
+		const std::filesystem::path contentRoot =
+			FindContentRoot(std::filesystem::path(modulePath).parent_path());
+		ObjTexturesDemoApp::SetContentRoot(contentRoot);
 	}
-
 
 	try
 	{
@@ -48,7 +94,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE prevInstance,
 ObjTexturesDemoApp::ObjTexturesDemoApp(HINSTANCE hInstance)
 : D3d12AppBase(hInstance)
 {
-	mMainWndCaption = L"PCG Lab 6";
+	mMainWndCaption = L"PCG Lab 8";
 }
 
 ObjTexturesDemoApp::~ObjTexturesDemoApp()
@@ -68,6 +114,7 @@ bool ObjTexturesDemoApp::Initialize()
 	BuildGeometryInputLayout();
 
 	mRenderer.Initialize(md3dDevice.Get(), mBackBufferFormat);
+	mRenderer.LoadIblTextures(md3dDevice.Get(), mCommandList.Get());
 	mRenderer.InitializeParticles(md3dDevice.Get(), 256u);
 	mRenderer.ResizeGBuffer(md3dDevice.Get(), static_cast<UINT>(mClientWidth), static_cast<UINT>(mClientHeight));
 	RefreshDeferredSrvs();
@@ -82,6 +129,7 @@ bool ObjTexturesDemoApp::Initialize()
 	FlushCommandQueue();
 
 	mTextureUploads.clear();
+	mRenderer.ClearIblUploadHeaps();
 
 	return true;
 }
@@ -157,8 +205,8 @@ void ObjTexturesDemoApp::Update(const FrameTimer& gt)
 	ObjectConstants obj{};
 	obj.EyePosW = mCameraPos;
 	obj.UvScale = {1.0f, 1.0f};
-	obj.TessNear = 35.0f;
-	obj.TessFar = 180.0f;
+	obj.TessNear = 60.0f;
+	obj.TessFar = 400.0f;
 	obj.DebugMode = static_cast<float>(mTessDebugMode);
 	// DispScale, MinTess, MaxTess, TessNear, TessFar — defaults из struct в .h
 	mSharedConstants = obj;
@@ -182,83 +230,44 @@ void ObjTexturesDemoApp::UpdateVisibility()
 		for (uint32_t i = 0; i < static_cast<uint32_t>(mInstances.size()); ++i)
 			mVisibleInstances.push_back(i);
 	}
-	else
+	else if (mOctreeFrustumEnabled)
 	{
-		const XMMATRIX view = XMLoadFloat4x4(&mView);
-		const XMMATRIX proj = XMLoadFloat4x4(&mProj);
-
-		if (mOctreeFrustumEnabled)
-		{
-			mOctree.QueryFrustum(
-				mFrustum,
-				mOctreeItems,
-				mMeshLocalBounds,
-				view,
-				proj,
-				mInstances.data(),
-				sizeof(SceneInstance),
-				offsetof(SceneInstance, World),
-				static_cast<uint32_t>(mInstances.size()),
-				mVisibleInstances);
-		}
-		else
-			CullInstancesLinear(view, proj);
+		mOctree.QueryFrustum(mFrustum, mOctreeItems, static_cast<uint32_t>(mInstances.size()), mVisibleInstances);
 	}
+	else
+		CullInstancesLinear();
 
 	mVisibleCount = static_cast<UINT>(mVisibleInstances.size());
 }
 
-void ObjTexturesDemoApp::CullInstancesLinear(const XMMATRIX& view, const XMMATRIX& proj)
+void ObjTexturesDemoApp::CullInstancesLinear()
 {
 	mVisibleInstances.reserve(mInstances.size());
 	for (uint32_t i = 0; i < static_cast<uint32_t>(mInstances.size()); ++i)
 	{
-		const XMMATRIX wvp = XMLoadFloat4x4(&mInstances[i].World) * view * proj;
-		const XMMATRIX clipRow = XMMatrixTranspose(wvp);
-		if (mFrustum.IntersectsAabb(mMeshLocalBounds, clipRow))
+		if (mFrustum.IntersectsAabb(mInstances[i].WorldBounds))
 			mVisibleInstances.push_back(i);
 	}
 }
 
 void ObjTexturesDemoApp::UpdateShadowCasters()
 {
-	mShadowCastInstances.clear();
 	mShadowDrawSponza = true;
 
 	if (!mFrustumCullingEnabled)
-	{
-		mShadowCastInstances.reserve(mInstances.size());
-		for (uint32_t i = 0; i < static_cast<uint32_t>(mInstances.size()); ++i)
-			mShadowCastInstances.push_back(i);
-	}
-	else
-	{
-		const XMMATRIX view = XMLoadFloat4x4(&mView);
-		const float aspect = AspectRatio();
-		const XMMATRIX projExpanded = XMMatrixPerspectiveFovLH(
-			kCameraFovYRad * kShadowCullFovScale,
-			aspect,
-			kCameraNearZ,
-			kCameraFarZ);
-		const XMMATRIX clipScene = XMMatrixTranspose(view * projExpanded);
-		mShadowDrawSponza = mSceneWorldBounds.IsValid() &&
-			mFrustum.IntersectsAabb(mSceneWorldBounds, clipScene);
+		return;
 
-		mShadowCastInstances.reserve(mInstances.size());
-		for (uint32_t i = 0; i < static_cast<uint32_t>(mInstances.size()); ++i)
-		{
-			const SceneInstance& inst = mInstances[i];
-			const XMMATRIX wvp = XMLoadFloat4x4(&inst.World) * view * projExpanded;
-			const XMMATRIX clipRow = XMMatrixTranspose(wvp);
-			const bool inExpandedFrustum = mFrustum.IntersectsAabb(inst.WorldBounds, clipRow);
-			const bool inSceneBounds =
-				mSceneWorldBounds.IsValid() && AabbIntersects(inst.WorldBounds, mSceneWorldBounds);
-			if (inExpandedFrustum || inSceneBounds)
-				mShadowCastInstances.push_back(i);
-		}
-	}
-
-	mShadowCastCount = static_cast<UINT>(mShadowCastInstances.size());
+	const XMMATRIX view = XMLoadFloat4x4(&mView);
+	const float aspect = AspectRatio();
+	const XMMATRIX viewProjExpanded = view * XMMatrixPerspectiveFovLH(
+		kCameraFovYRad * kShadowCullFovScale,
+		aspect,
+		kCameraNearZ,
+		kCameraFarZ);
+	const Aabb& shadowBounds =
+		mShadowSceneBounds.IsValid() ? mShadowSceneBounds : mSponzaWorldBounds;
+	mShadowDrawSponza = mSponzaWorldBounds.IsValid() &&
+		mFrustum.IntersectsAabb(shadowBounds, viewProjExpanded);
 }
 
 UINT ObjTexturesDemoApp::CountShadowDrawCalls() const
@@ -267,11 +276,9 @@ UINT ObjTexturesDemoApp::CountShadowDrawCalls() const
 		(mShadowDrawSponza && mSceneGeo && !mSceneSubmeshes.empty())
 			? static_cast<UINT>(mSceneSubmeshes.size())
 			: 0u;
-	const UINT rockDraws =
-		(mRockGeo && !mRockSubmeshes.empty())
-			? static_cast<UINT>(mRockSubmeshes.size()) * mShadowCastCount
-			: 0u;
-	return (sceneDraws + rockDraws) * kShadowCascadeCount;
+	const UINT propDraws =
+		(mPropGeo && !mPropSubmeshes.empty()) ? static_cast<UINT>(mPropSubmeshes.size()) : 0u;
+	return (sceneDraws + propDraws) * kShadowCascadeCount;
 }
 
 void ObjTexturesDemoApp::UpdateCameraAttachedSpotLight()
@@ -338,16 +345,16 @@ void ObjTexturesDemoApp::BuildDescriptorHeaps(UINT srvCount)
 
 void ObjTexturesDemoApp::BuildConstantBuffers()
 {
-	static constexpr UINT kMaxInstances = 1024;
+	static constexpr UINT kMaxInstances = kMaxObjectDrawCalls;
 	mObjectCbElementSize = Dx12Utils::CalcConstantBufferByteSize(sizeof(ObjectConstants));
 	mObjectCB = std::make_unique<GpuUploadBuffer<ObjectConstants>>(md3dDevice.Get(), kMaxInstances, true);
 }
 
-// Root signature геометрического прохода Lab 3: b0 = ObjectCB, t0..t2 = diffuse/normal/disp
+// Root signature геометрического прохода Lab 3/8: b0 = ObjectCB, t0..t3 = diff/normal/disp/ARM
 void ObjTexturesDemoApp::BuildRootSignature()
 {
 	CD3DX12_DESCRIPTOR_RANGE srvTable{};
-	srvTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 3, 0);
+	srvTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 4, 0);
 
 	CD3DX12_ROOT_PARAMETER slotRootParameter[2]{};
 	slotRootParameter[0].InitAsConstantBufferView(0, 0, D3D12_SHADER_VISIBILITY_ALL);
@@ -402,23 +409,97 @@ void ObjTexturesDemoApp::BuildGeometryInputLayout()
 		{"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
 		{"NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
 		{"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 24, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+		{"TANGENT", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 32, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
 	};
+	static_assert(
+		sizeof(Vertex) >= 32u,
+		"Shadow pass reads POSITION+NORMAL+TEXCOORD (32 bytes); keep Vertex compatible.");
 }
+
+namespace
+{
+XMFLOAT3 TangentFromNormalCpu(XMFLOAT3 n)
+{
+	const XMFLOAT3 up = (std::fabs(n.y) > 0.999f) ? XMFLOAT3(1.f, 0.f, 0.f) : XMFLOAT3(0.f, 1.f, 0.f);
+	XMVECTOR t = XMVector3Cross(XMLoadFloat3(&up), XMLoadFloat3(&n));
+	if (XMVectorGetX(XMVector3LengthSq(t)) < 1e-8f)
+		return {1.f, 0.f, 0.f};
+	XMFLOAT3 out{};
+	XMStoreFloat3(&out, XMVector3Normalize(t));
+	return out;
+}
+
+void ComputeMeshTangents(std::vector<Vertex>& verts, const std::vector<uint32_t>& indices)
+{
+	for (size_t tri = 0; tri + 2 < indices.size(); tri += 3)
+	{
+		Vertex& v0 = verts[indices[tri]];
+		Vertex& v1 = verts[indices[tri + 1]];
+		Vertex& v2 = verts[indices[tri + 2]];
+
+		const XMVECTOR p0 = XMLoadFloat3(&v0.Pos);
+		const XMVECTOR p1 = XMLoadFloat3(&v1.Pos);
+		const XMVECTOR p2 = XMLoadFloat3(&v2.Pos);
+
+		const float du1 = v1.TexC.x - v0.TexC.x;
+		const float dv1 = v1.TexC.y - v0.TexC.y;
+		const float du2 = v2.TexC.x - v0.TexC.x;
+		const float dv2 = v2.TexC.y - v0.TexC.y;
+		const float denom = du1 * dv2 - du2 * dv1;
+
+		XMFLOAT3 fallback = TangentFromNormalCpu(v0.Normal);
+		if (std::fabs(denom) < 1e-8f)
+		{
+			v0.Tangent = {fallback.x, fallback.y, fallback.z, 1.f};
+			const XMFLOAT3 fb1 = TangentFromNormalCpu(v1.Normal);
+			v1.Tangent = {fb1.x, fb1.y, fb1.z, 1.f};
+			const XMFLOAT3 fb2 = TangentFromNormalCpu(v2.Normal);
+			v2.Tangent = {fb2.x, fb2.y, fb2.z, 1.f};
+			continue;
+		}
+
+		const float r = 1.f / denom;
+		const XMVECTOR edge1 = XMVectorSubtract(p1, p0);
+		const XMVECTOR edge2 = XMVectorSubtract(p2, p0);
+		const XMVECTOR tan = XMVectorScale(
+			XMVectorSubtract(XMVectorScale(edge1, dv2), XMVectorScale(edge2, dv1)),
+			r);
+		const XMVECTOR bitan = XMVectorScale(
+			XMVectorSubtract(XMVectorScale(edge2, du1), XMVectorScale(edge1, du2)),
+			r);
+
+		for (int k = 0; k < 3; ++k)
+		{
+			Vertex& v = verts[indices[tri + static_cast<size_t>(k)]];
+			XMVECTOR n = XMLoadFloat3(&v.Normal);
+			XMVECTOR tOrtho = XMVectorSubtract(tan, XMVectorMultiply(n, XMVector3Dot(tan, n)));
+			float handedness = 1.f;
+			if (XMVectorGetX(XMVector3LengthSq(tOrtho)) < 1e-8f)
+			{
+				XMFLOAT3 fb = TangentFromNormalCpu(v.Normal);
+				tOrtho = XMLoadFloat3(&fb);
+			}
+			else
+			{
+				tOrtho = XMVector3Normalize(tOrtho);
+				if (XMVectorGetX(XMVector3Dot(XMVector3Cross(n, tOrtho), bitan)) < 0.f)
+					handedness = -1.f;
+			}
+
+			XMFLOAT4 out{};
+			XMStoreFloat3(reinterpret_cast<XMFLOAT3*>(&out), tOrtho);
+			out.w = handedness;
+			v.Tangent = out;
+		}
+	}
+}
+} // namespace
 
 void ObjTexturesDemoApp::CreateSrvForTexture(int heapIndex, ID3D12Resource* tex)
 {
-	D3D12_RESOURCE_DESC desc = tex->GetDesc();
-	D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc{};
-	srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-	srvDesc.Format = desc.Format;
-	srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-	srvDesc.Texture2D.MipLevels = desc.MipLevels;
-	srvDesc.Texture2D.MostDetailedMip = 0;
-	srvDesc.Texture2D.ResourceMinLODClamp = 0.f;
-
 	D3D12_CPU_DESCRIPTOR_HANDLE h = mSrvHeap->GetCPUDescriptorHandleForHeapStart();
 	h.ptr += static_cast<SIZE_T>(heapIndex) * mCbvSrvUavDescriptorSize;
-	md3dDevice->CreateShaderResourceView(tex, &srvDesc, h);
+	Dx12Utils::CreateTextureSrv(md3dDevice.Get(), tex, h, false);
 }
 
 std::unique_ptr<MeshGeometry> ObjTexturesDemoApp::BuildModelGeometry(const ObjMeshData& data, const char* name)
@@ -431,6 +512,7 @@ std::unique_ptr<MeshGeometry> ObjTexturesDemoApp::BuildModelGeometry(const ObjMe
 		verts[i].Normal = data.Normals[i];
 		verts[i].TexC = data.Texcoords[i];
 	}
+	ComputeMeshTangents(verts, data.Indices32);
 
 	const UINT vbByteSize = static_cast<UINT>(sizeof(Vertex) * verts.size());
 	const UINT ibByteSize = static_cast<UINT>(sizeof(uint32_t) * data.Indices32.size());
@@ -513,38 +595,74 @@ void ObjTexturesDemoApp::BuildDeferredGeometryPipeline()
 	psoDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
 	ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&mDeferredGeoPSO)));
 
+	CD3DX12_RASTERIZER_DESC rockRs(D3D12_DEFAULT);
+	rockRs.CullMode = D3D12_CULL_MODE_NONE;
+	psoDesc.RasterizerState = rockRs;
+	ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&mDeferredGeoRockPSO)));
+
 	CD3DX12_RASTERIZER_DESC wireRs(D3D12_DEFAULT);
 	wireRs.FillMode = D3D12_FILL_MODE_WIREFRAME;
 	wireRs.CullMode = D3D12_CULL_MODE_NONE;
 	psoDesc.RasterizerState = wireRs;
 	ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&mDeferredGeoWirePSO)));
+
+	if (!mRenderer.TessSolidVsByteCode())
+		throw DxException(
+			E_FAIL,
+			L"Solid geometry vertex shader is not initialized.",
+			AnsiToWString(__FILE__),
+			__LINE__);
+
+	D3D12_GRAPHICS_PIPELINE_STATE_DESC solidDesc = psoDesc;
+	solidDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
+	solidDesc.RasterizerState.FrontCounterClockwise = FALSE;
+	solidDesc.VS = {
+		reinterpret_cast<BYTE*>(mRenderer.TessSolidVsByteCode()->GetBufferPointer()),
+		mRenderer.TessSolidVsByteCode()->GetBufferSize()};
+	solidDesc.HS = {};
+	solidDesc.DS = {};
+	solidDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+	ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(&solidDesc, IID_PPV_ARGS(&mDeferredGeoSolidPSO)));
+
+	CD3DX12_RASTERIZER_DESC noCullRs(D3D12_DEFAULT);
+	noCullRs.CullMode = D3D12_CULL_MODE_NONE;
+	solidDesc.RasterizerState = noCullRs;
+	ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(&solidDesc, IID_PPV_ARGS(&mDeferredGeoSolidNoCullPSO)));
 }
 
 void ObjTexturesDemoApp::UpdateWindowCaption()
 {
 	wchar_t cap[160];
-	if (mShadowDrawOverflow)
+	const wchar_t* vig = mRenderer.PostVignetteEnabled() ? L"on" : L"off";
+	const wchar_t* chr = mRenderer.PostChromaticEnabled() ? L"on" : L"off";
+
+	if (mShadowDrawOverflow || mGeometryDrawOverflow)
 	{
+		const wchar_t* cbTag = mGeometryDrawOverflow ? L"geo CB!" : L"shd CB!";
 		swprintf_s(
 			cap,
 			160,
-			L"Lab 6 | %.0f FPS | vis %u/%u | shd %u CB!",
+			L"Lab 8 | %.0f FPS | vis %u/%u | %s | vig %s chr %s",
 			mDisplayFps,
 			mVisibleCount,
 			mInstanceCount,
-			mShadowDrawSlotsUsed);
+			cbTag,
+			vig,
+			chr);
 	}
 	else
 	{
 		swprintf_s(
 			cap,
 			160,
-			L"Lab 6 | %.0f FPS | vis %u/%u | shd %u/%u",
+			L"Lab 8 | %.0f FPS | vis %u/%u | shd %u/%u | vig %s chr %s",
 			mDisplayFps,
 			mVisibleCount,
 			mInstanceCount,
-			mShadowCastCount,
-			mInstanceCount);
+			mShadowDrawSlotsUsed,
+			mShadowDrawCallsNeeded,
+			vig,
+			chr);
 	}
 	SetWindowText(mhMainWnd, cap);
 }
@@ -564,14 +682,12 @@ void ObjTexturesDemoApp::SetupSceneLights()
 {
 	mSceneLights.clear();
 
-	const float keyLightIntensity = 5.25f;
-
 	GpuLight pt{};
 	pt.Type = kLightTypePoint;
 	pt.Position = XMFLOAT3(0.f, 60.f, 0.f);
 	pt.Range = 400.f;
 	pt.Color = XMFLOAT3(1.f, 0.95f, 0.88f);
-	pt.Intensity = keyLightIntensity * 0.35f;
+	pt.Intensity = kLocalLightIntensity * 0.35f;
 	pt.Direction = XMFLOAT3(0.f, -1.f, 0.f);
 	pt.SpotInnerCos = 0.f;
 	pt.SpotOuterCos = 0.f;
@@ -582,11 +698,11 @@ void ObjTexturesDemoApp::SetupSceneLights()
 	sp.Type = kLightTypeSpot;
 	sp.Position = mCameraPos;
 	sp.Direction = XMFLOAT3(0.f, 0.f, 1.f);
-	sp.Range = 120.f;
+	sp.Range = kCameraSpotRange;
 	sp.Color = XMFLOAT3(0.85f, 0.92f, 1.f);
-	sp.Intensity = keyLightIntensity;
-	sp.SpotInnerCos = cosf(XMConvertToRadians(8.f));
-	sp.SpotOuterCos = cosf(XMConvertToRadians(17.f));
+	sp.Intensity = kLocalLightIntensity * kCameraSpotIntensityMul;
+	sp.SpotInnerCos = cosf(XMConvertToRadians(kCameraSpotInnerAngleDeg));
+	sp.SpotOuterCos = cosf(XMConvertToRadians(kCameraSpotOuterAngleDeg));
 	sp.Padding = XMFLOAT2(0.f, 0.f);
 	mSceneLights.push_back(sp);
 
@@ -599,6 +715,21 @@ LRESULT ObjTexturesDemoApp::MsgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
 	switch (msg)
 	{
 	case WM_KEYDOWN:
+		if ((lParam & 0x40000000) == 0)
+		{
+			if (wParam == VK_F2)
+			{
+				mRenderer.SetPostVignetteEnabled(!mRenderer.PostVignetteEnabled());
+				UpdateWindowCaption();
+				return 0;
+			}
+			if (wParam == VK_F4)
+			{
+				mRenderer.SetPostChromaticEnabled(!mRenderer.PostChromaticEnabled());
+				UpdateWindowCaption();
+				return 0;
+			}
+		}
 		switch (wParam)
 		{
 		case 'W':

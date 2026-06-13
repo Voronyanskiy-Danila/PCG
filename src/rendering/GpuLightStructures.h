@@ -43,8 +43,8 @@ struct DeferredLightingConstants
 	DirectX::XMFLOAT4 DirDirection{};           // xyz = нормализованный LightDirW, w = 0
 	DirectX::XMFLOAT4 DirColorIntensity{};      // rgb = цвет, w = множитель (интенсивность)
 	UINT NumLights = 0;
-	UINT _Pad0 = 0;
-	UINT _Pad1 = 0;
-	UINT _Pad2 = 0;
+	float MaxEnvMipLevel = 4.0f;
+	float HasIblEnv = 0.0f;
+	float _Pad = 0.0f;
 };
 static_assert(sizeof(DeferredLightingConstants) == 64u, "DeferredLightingConstants size");

@@ -7,10 +7,12 @@
 // =============================================================================
 
 #include "RenderingSystem.h"
+#include "../importers/Importer_Image_DirectXTex.h"
 #include "../rendering/d3d12/D3d12_RenderHelpers.h"
 #include <algorithm>
 #include <array>
 #include <cstring>
+#include <vector>
 
 using Microsoft::WRL::ComPtr;
 using namespace DirectX;
@@ -77,6 +79,8 @@ void RenderingSystem::Initialize(ID3D12Device* device, DXGI_FORMAT backBufferFor
 	// Lab 3 — геометрия: tessellation + displacement + G-buffer MRT
 	m_tessVsBc = Dx12Utils::CompileShader(
 		L"content/shaders/deferred_tessellation.hlsl", nullptr, "VS", "vs_5_0");
+	m_tessSolidVsBc = Dx12Utils::CompileShader(
+		L"content/shaders/deferred_tessellation.hlsl", nullptr, "VS_GBuffer", "vs_5_0");
 	m_tessHsBc = Dx12Utils::CompileShader(
 		L"content/shaders/deferred_tessellation.hlsl", nullptr, "HullHS", "hs_5_0");
 	m_tessDsBc = Dx12Utils::CompileShader(
@@ -100,6 +104,50 @@ void RenderingSystem::Initialize(ID3D12Device* device, DXGI_FORMAT backBufferFor
 	InitializeShadows(device);
 	BuildLightingPipeline(device);
 	BuildShadowPipeline(device);
+	m_post.Initialize(device, backBufferFormat);
+}
+
+void RenderingSystem::LoadIblTextures(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList)
+{
+	if (!device || !cmdList)
+	{
+		throw DxException(
+			E_INVALIDARG,
+			L"LoadIblTextures requires valid device and command list.",
+			AnsiToWString(__FILE__),
+			__LINE__);
+	}
+
+	auto loadOne = [&](const wchar_t* path,
+					   Microsoft::WRL::ComPtr<ID3D12Resource>& out,
+					   bool& outIsCubemap) {
+		Microsoft::WRL::ComPtr<ID3D12Resource> upload;
+		const HRESULT hr =
+			LoadTextureImageFromFile12(device, cmdList, path, out, upload, &outIsCubemap);
+		if (FAILED(hr))
+		{
+			std::wstring msg = L"Failed to load IBL texture:\n";
+			msg += path;
+			msg += L"\n\nExpected under project root: Stuff/*.dds";
+			throw DxException(hr, msg, AnsiToWString(__FILE__), __LINE__);
+		}
+		m_iblUploadHeaps.push_back(upload);
+	};
+
+	loadOne(L"Stuff/IrradianceMap_BC6U.dds", m_iblIrradiance, m_iblIrradianceIsCubemap);
+	loadOne(L"Stuff/PreFilteredEnvMap_BC6U.dds", m_iblPrefilteredEnv, m_iblPrefilterIsCubemap);
+	loadOne(L"Stuff/IntegrationMap.dds", m_iblIntegrationMap, m_iblIntegrationIsCubemap);
+
+	if (m_iblPrefilteredEnv)
+	{
+		const D3D12_RESOURCE_DESC preDesc = m_iblPrefilteredEnv->GetDesc();
+		m_iblMaxEnvMipLevel = static_cast<float>((std::max)(static_cast<UINT>(preDesc.MipLevels), 1u) - 1u);
+	}
+}
+
+void RenderingSystem::ClearIblUploadHeaps()
+{
+	m_iblUploadHeaps.clear();
 }
 
 void RenderingSystem::BuildParticleComputePipeline(ID3D12Device* device)
@@ -196,6 +244,13 @@ void RenderingSystem::BuildParticleDrawPipeline(ID3D12Device* device)
 	pso.SampleDesc.Count = 1u;
 	pso.SampleDesc.Quality = 0u;
 	ThrowIfFailed(device->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&m_psoParticleDraw)));
+
+	CD3DX12_DEPTH_STENCIL_DESC dsNoDepth(D3D12_DEFAULT);
+	dsNoDepth.DepthEnable = FALSE;
+	dsNoDepth.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
+	pso.DepthStencilState = dsNoDepth;
+	pso.DSVFormat = DXGI_FORMAT_UNKNOWN;
+	ThrowIfFailed(device->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&m_psoParticleDrawNoDepth)));
 }
 
 void RenderingSystem::InitializeParticles(ID3D12Device* device, UINT maxParticles)
@@ -382,8 +437,9 @@ void RenderingSystem::UpdateParticles(ID3D12GraphicsCommandList* cmd, float delt
 
 void RenderingSystem::DrawParticles(
 	ID3D12GraphicsCommandList* cmd,
-	D3D12_CPU_DESCRIPTOR_HANDLE backBufferRtv,
+	D3D12_CPU_DESCRIPTOR_HANDLE colorTargetRtv,
 	D3D12_CPU_DESCRIPTOR_HANDLE sceneDepthDsv,
+	bool useGBufferDepth,
 	const D3D12_VIEWPORT& viewport,
 	const D3D12_RECT& scissor,
 	CXMMATRIX view,
@@ -391,7 +447,20 @@ void RenderingSystem::DrawParticles(
 	FXMVECTOR cameraRight,
 	FXMVECTOR cameraUp)
 {
-	if (!cmd || !m_psoParticleDraw || !m_particleDrawCb || m_particleMaxCount == 0u)
+	ID3D12PipelineState* particlePso = m_psoParticleDraw.Get();
+	if (useGBufferDepth)
+	{
+		if (!m_psoParticleDraw)
+			return;
+	}
+	else
+	{
+		particlePso = m_psoParticleDrawNoDepth.Get();
+		if (!particlePso)
+			return;
+	}
+
+	if (!cmd || !m_particleDrawCb || m_particleMaxCount == 0u)
 		return;
 
 	ParticleDrawConstants cb{};
@@ -400,14 +469,18 @@ void RenderingSystem::DrawParticles(
 	XMStoreFloat3(&cb.CameraUp, cameraUp);
 	m_particleDrawCb->CopyData(0, cb);
 
-	cmd->OMSetRenderTargets(1u, &backBufferRtv, FALSE, &sceneDepthDsv);
+	if (useGBufferDepth)
+		cmd->OMSetRenderTargets(1u, &colorTargetRtv, FALSE, &sceneDepthDsv);
+	else
+		cmd->OMSetRenderTargets(1u, &colorTargetRtv, FALSE, nullptr);
+
 	cmd->RSSetViewports(1u, &viewport);
 	cmd->RSSetScissorRects(1u, &scissor);
 
 	ID3D12DescriptorHeap* heaps[] = {m_particleUavHeap.Get()};
 	cmd->SetDescriptorHeaps(static_cast<UINT>(_countof(heaps)), heaps);
 	cmd->SetGraphicsRootSignature(m_rsParticleDraw.Get());
-	cmd->SetPipelineState(m_psoParticleDraw.Get());
+	cmd->SetPipelineState(particlePso);
 	cmd->SetGraphicsRootConstantBufferView(0u, m_particleDrawCb->Resource()->GetGPUVirtualAddress());
 
 	const UINT drawIdx = m_particlePingPong;
@@ -594,14 +667,14 @@ void RenderingSystem::SetShadowPipeline(ID3D12GraphicsCommandList* cmd)
 void RenderingSystem::BuildLightingPipeline(ID3D12Device* device)
 {
 	CD3DX12_DESCRIPTOR_RANGE srvRange{};
-	srvRange.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 6u, 0u);
+	srvRange.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 9u, 0u);
 
 	CD3DX12_ROOT_PARAMETER rp[3]{};
 	rp[0].InitAsConstantBufferView(0, 0, D3D12_SHADER_VISIBILITY_ALL);
 	rp[1].InitAsConstantBufferView(1, 0, D3D12_SHADER_VISIBILITY_ALL);
 	rp[2].InitAsDescriptorTable(1, &srvRange, D3D12_SHADER_VISIBILITY_PIXEL);
 
-	CD3DX12_STATIC_SAMPLER_DESC samplers[2]{};
+	CD3DX12_STATIC_SAMPLER_DESC samplers[3]{};
 	samplers[0].Init(
 		0,
 		D3D12_FILTER_MIN_MAG_MIP_POINT,
@@ -630,11 +703,25 @@ void RenderingSystem::BuildLightingPipeline(ID3D12Device* device)
 		D3D12_FLOAT32_MAX,
 		D3D12_SHADER_VISIBILITY_PIXEL,
 		0);
+	samplers[2].Init(
+		2,
+		D3D12_FILTER_MIN_MAG_MIP_LINEAR,
+		D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+		D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+		D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+		0.f,
+		16,
+		D3D12_COMPARISON_FUNC_NEVER,
+		D3D12_STATIC_BORDER_COLOR_TRANSPARENT_BLACK,
+		0.f,
+		D3D12_FLOAT32_MAX,
+		D3D12_SHADER_VISIBILITY_PIXEL,
+		0);
 
 	CD3DX12_ROOT_SIGNATURE_DESC rsd{};
 	rsd.NumParameters = 3;
 	rsd.pParameters = rp;
-	rsd.NumStaticSamplers = 2;
+	rsd.NumStaticSamplers = 3;
 	rsd.pStaticSamplers = samplers;
 	rsd.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
 
@@ -682,6 +769,7 @@ void RenderingSystem::BuildLightingPipeline(ID3D12Device* device)
 void RenderingSystem::ResizeGBuffer(ID3D12Device* device, UINT width, UINT height)
 {
 	m_gbuffer.Resize(device, width, height);
+	m_post.Resize(device, width, height);
 	m_gbIsSrvReadable = false;
 }
 
@@ -720,6 +808,58 @@ void RenderingSystem::CreateDeferredSrvs(
 		shadowSlot,
 		m_shadows.ShadowSrvCpu(),
 		D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+
+	const UINT iblBase = heapOffsetFirst + GBuffer::kRtCount + 2u;
+	if (m_iblIrradiance)
+	{
+		D3D12_CPU_DESCRIPTOR_HANDLE slot = h;
+		slot.ptr += static_cast<SIZE_T>(iblBase + 0u) * descriptorIncrementSize;
+		Dx12Utils::CreateTextureSrv(device, m_iblIrradiance.Get(), slot, m_iblIrradianceIsCubemap);
+	}
+	if (m_iblPrefilteredEnv)
+	{
+		D3D12_CPU_DESCRIPTOR_HANDLE slot = h;
+		slot.ptr += static_cast<SIZE_T>(iblBase + 1u) * descriptorIncrementSize;
+		Dx12Utils::CreateTextureSrv(device, m_iblPrefilteredEnv.Get(), slot, m_iblPrefilterIsCubemap);
+	}
+	if (m_iblIntegrationMap)
+	{
+		D3D12_CPU_DESCRIPTOR_HANDLE slot = h;
+		slot.ptr += static_cast<SIZE_T>(iblBase + 2u) * descriptorIncrementSize;
+		Dx12Utils::CreateTextureSrv(device, m_iblIntegrationMap.Get(), slot, m_iblIntegrationIsCubemap);
+	}
+
+	const UINT postSrvOffset = heapOffsetFirst + GBuffer::kRtCount + 2u + kIblSrvCount;
+	m_post.CreateSrvs(device, postSrvOffset, descriptorIncrementSize, shaderVisibleSrvHeap);
+}
+
+void RenderingSystem::RunPostProcess(
+	ID3D12GraphicsCommandList* cmd,
+	ID3D12Resource* backBuffer,
+	D3D12_RESOURCE_STATES backBufferStateBefore,
+	ID3D12DescriptorHeap* srvHeap,
+	UINT deferredSrvHeapBase,
+	UINT srvDescriptorIncrement,
+	D3D12_CPU_DESCRIPTOR_HANDLE backBufferRtv,
+	const D3D12_VIEWPORT& viewport,
+	const D3D12_RECT& scissor)
+{
+	if (!UsesSceneColorTarget())
+		return;
+
+	const UINT postSrvBase = deferredSrvHeapBase + GBuffer::kRtCount + 2u + kIblSrvCount;
+	m_post.Run(
+		cmd,
+		backBuffer,
+		backBufferStateBefore,
+		srvHeap,
+		postSrvBase,
+		srvDescriptorIncrement,
+		backBufferRtv,
+		viewport,
+		scissor,
+		m_postVignetteEnabled,
+		m_postChromaticEnabled);
 }
 
 void RenderingSystem::SetLights(const GpuLight* lights, UINT count)
@@ -756,7 +896,9 @@ void RenderingSystem::UpdateLightingFrameConstants(
 	c.DirColorIntensity = XMFLOAT4(dirLightColor.x, dirLightColor.y, dirLightColor.z, dirIntensity);
 
 	c.NumLights = m_lightCount;
-	c._Pad0 = c._Pad1 = c._Pad2 = 0;
+	c.MaxEnvMipLevel = m_iblMaxEnvMipLevel;
+	c.HasIblEnv = m_iblPrefilteredEnv ? 1.0f : 0.0f;
+	c._Pad = 0.f;
 	m_lightingCb->CopyData(0, c);
 }
 

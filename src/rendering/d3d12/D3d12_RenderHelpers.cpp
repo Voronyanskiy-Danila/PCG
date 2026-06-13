@@ -95,6 +95,42 @@ ComPtr<ID3DBlob> Dx12Utils::CompileShader(
 	return byteCode;
 }
 
+void Dx12Utils::CreateTextureSrv(
+	ID3D12Device* device,
+	ID3D12Resource* tex,
+	D3D12_CPU_DESCRIPTOR_HANDLE dst,
+	bool isCubemap)
+{
+	const D3D12_RESOURCE_DESC desc = tex->GetDesc();
+	D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
+	srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+	srv.Format = desc.Format;
+
+	if (isCubemap)
+	{
+		srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBE;
+		srv.TextureCube.MipLevels = desc.MipLevels;
+		srv.TextureCube.MostDetailedMip = 0;
+		srv.TextureCube.ResourceMinLODClamp = 0.f;
+	}
+	else if (desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D)
+	{
+		srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE3D;
+		srv.Texture3D.MipLevels = desc.MipLevels;
+		srv.Texture3D.MostDetailedMip = 0;
+		srv.Texture3D.ResourceMinLODClamp = 0.f;
+	}
+	else
+	{
+		srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+		srv.Texture2D.MipLevels = desc.MipLevels;
+		srv.Texture2D.MostDetailedMip = 0;
+		srv.Texture2D.ResourceMinLODClamp = 0.f;
+	}
+
+	device->CreateShaderResourceView(tex, &srv, dst);
+}
+
 std::wstring DxException::ToString() const
 {
     _com_error err(ErrorCode);

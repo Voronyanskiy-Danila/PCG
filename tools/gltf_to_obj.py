@@ -95,6 +95,9 @@ def convert(gltf_path: Path, material_name: str = "rock_07") -> None:
         f.write(f"map_Kd textures/{material_name}_diff_1k.jpg\n")
         f.write(f"map_Bump textures/{material_name}_nor_dx_1k.jpg\n")
         f.write(f"map_disp textures/{material_name}_disp_1k.jpg\n")
+        f.write(f"map_ARM textures/{material_name}_arm_1k.jpg\n")
+        f.write("Pr 1.0\n")
+        f.write("Pm 1.0\n")
 
     print(f"Wrote {obj_path} ({len(indices)//3} tris, {len(positions)} verts)")
     print(f"Wrote {mtl_path}")

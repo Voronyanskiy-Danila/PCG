@@ -10,4 +10,5 @@ HRESULT LoadTextureImageFromFile12(
 	_In_ ID3D12GraphicsCommandList* cmdList,
 	_In_z_ const wchar_t* filePath,
 	_Out_ Microsoft::WRL::ComPtr<ID3D12Resource>& texture,
-	_Out_ Microsoft::WRL::ComPtr<ID3D12Resource>& textureUploadHeap);
+	_Out_ Microsoft::WRL::ComPtr<ID3D12Resource>& textureUploadHeap,
+	_Out_opt_ bool* isCubemapOut = nullptr);

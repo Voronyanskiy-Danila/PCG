@@ -54,16 +54,6 @@ Aabb BoundsFromItems(const std::vector<OctreeItem>& items, const std::vector<uin
 	return b;
 }
 
-const XMFLOAT4X4& InstanceWorld(
-	const void* instances,
-	size_t stride,
-	size_t worldOffset,
-	uint32_t index)
-{
-	const auto* row = static_cast<const char*>(instances) + static_cast<size_t>(index) * stride;
-	return *reinterpret_cast<const XMFLOAT4X4*>(row + worldOffset);
-}
-
 } // namespace
 
 void Octree::Clear()
@@ -124,17 +114,11 @@ void Octree::Subdivide(Node& node, const std::vector<OctreeItem>& items, int dep
 void Octree::QueryFrustum(
 	const Frustum& frustum,
 	const std::vector<OctreeItem>& items,
-	const Aabb& localMeshBounds,
-	CXMMATRIX view,
-	CXMMATRIX proj,
-	const void* instances,
-	size_t instanceStrideBytes,
-	size_t worldMatrixOffsetBytes,
 	uint32_t instanceCount,
 	std::vector<uint32_t>& outVisible) const
 {
 	outVisible.clear();
-	if (!mRoot || items.empty() || !instances || instanceStrideBytes == 0)
+	if (!mRoot || items.empty())
 		return;
 
 	std::vector<uint8_t> seen(instanceCount, 0);
@@ -165,11 +149,7 @@ void Octree::QueryFrustum(
 				if (inst >= instanceCount || seen[inst])
 					continue;
 
-				const XMFLOAT4X4& world =
-					InstanceWorld(instances, instanceStrideBytes, worldMatrixOffsetBytes, inst);
-				const XMMATRIX wvp = XMLoadFloat4x4(&world) * view * proj;
-				const XMMATRIX clipRow = XMMatrixTranspose(wvp);
-				if (!frustum.IntersectsAabb(localMeshBounds, clipRow))
+				if (!frustum.IntersectsAabb(items[itemIdx].Bounds))
 					continue;
 
 				seen[inst] = 1;

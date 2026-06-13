@@ -21,6 +21,7 @@
 //   t0 — diffuse (map_Kd)
 //   t1 — normal map (map_Bump / norm)
 //   t2 — displacement (map_disp)
+//   t3 — ARM: AO / roughness / metallic (map_ARM), Lab 8 PBR
 //
 // DebugMode (клавиша T в приложении):
 //   0 — нормальный рендер
@@ -40,10 +41,12 @@ cbuffer ObjectCB : register(b0)
 	float    _pad0;
 
 	float3   gMatKd;
-	float    gHasDiffuseTexture;  // 1 — сэмплировать gDiffuseMap
+	float    gHasDiffuseTexture;
 
-	float3   gMatKs;
-	float    gMatNs;              // shininess → roughness в G-buffer
+	float    gMatRoughness;
+	float    gMatMetallic;
+	float    gHasRmTexture;
+	float    gMatNsFallback;
 
 	float2   gUvScale;            // масштаб UV (сейчас 1,1 с CPU)
 	float2   _pad1;
@@ -57,7 +60,7 @@ cbuffer ObjectCB : register(b0)
 	float    gTessFar;            // дистанция, на которой tess = gMinTess
 	float    gHasNormalTexture;   // 1 — perturb normal из gNormalMap
 	float    gDebugMode;          // см. константы ниже
-	float    _pad2;
+	float    gNormalFlipY;        // 1 — OpenGL normal map (Sponza ddn)
 };
 
 static const float kDbgTessHeatmap = 1.f;  // режим визуализации LOD
@@ -67,14 +70,16 @@ static const float kDbgTessNoDisp = 3.f;   // tess есть, displacement вык
 Texture2D    gDiffuseMap : register(t0);
 Texture2D    gNormalMap   : register(t1);
 Texture2D    gDispMap     : register(t2);
+Texture2D    gRmMap       : register(t3);
 SamplerState gSamLinearWrap : register(s0);
 
 // Вход из vertex buffer (layout совпадает с struct Vertex в C++)
 struct VSInput
 {
-	float3 PosL    : POSITION;
-	float3 NormalL : NORMAL;
-	float2 Tex     : TEXCOORD0;
+	float3 PosL     : POSITION;
+	float3 NormalL  : NORMAL;
+	float2 Tex      : TEXCOORD0;
+	float4 TangentL : TANGENT;
 };
 
 // Выход VS = одна контрольная точка патча для hull/domain
@@ -82,7 +87,7 @@ struct HsControlPoint
 {
 	float3 PosL     : POSITION;
 	float3 NormalL  : NORMAL;
-	float3 TangentL : TANGENT;   // для TBN и normal map в PS
+	float4 TangentL : TANGENT;   // xyz=tangent, w=bitangent sign
 	float2 Tex      : TEXCOORD0;
 };
 
@@ -93,12 +98,30 @@ struct HS_CONSTANTS
 	float Inside  : SV_InsideTessFactor;
 };
 
+	float2 TransformUv(float2 rawTex)
+{
+	float2 uv = float2(rawTex.x * abs(gUvScale.x), rawTex.y * abs(gUvScale.y));
+	if (gUvScale.x < 0.f)
+		uv.x = 1.f - uv.x;
+	if (gUvScale.y < 0.f)
+		uv.y = 1.f - uv.y;
+	return uv;
+}
+
 // Строит касательную по нормали (в OBJ часто нет tangent — нужен для normal map)
 float3 TangentFromNormal(float3 n)
 {
 	float3 up = (abs(n.y) > 0.999f) ? float3(1.f, 0.f, 0.f) : float3(0.f, 1.f, 0.f);
 	float3 t = cross(up, n);
 	return (dot(t, t) > 1e-8f) ? normalize(t) : float3(1.f, 0.f, 0.f);
+}
+
+float4 ResolveTangentL(float3 n, float4 storedT)
+{
+	float3 t = (dot(storedT.xyz, storedT.xyz) < 1e-8f)
+		? TangentFromNormal(n)
+		: normalize(storedT.xyz - dot(storedT.xyz, n) * n);
+	return float4(t, storedT.w);
 }
 
 // -----------------------------------------------------------------------------
@@ -111,8 +134,8 @@ HsControlPoint VS(VSInput vin)
 	HsControlPoint o;
 	o.PosL = vin.PosL;
 	o.NormalL = normalize(vin.NormalL);
-	o.TangentL = TangentFromNormal(o.NormalL);
-	o.Tex = vin.Tex * gUvScale;
+	o.TangentL = ResolveTangentL(o.NormalL, vin.TangentL);
+	o.Tex = TransformUv(vin.Tex);
 	return o;
 }
 
@@ -168,7 +191,7 @@ struct DSOutput
 	float4 PosH     : SV_POSITION;
 	float3 PosW     : TEXCOORD0;
 	float3 NormalW  : TEXCOORD1;
-	float3 TangentW : TEXCOORD2;
+	float4 TangentW : TEXCOORD2; // xyz=tangent, w=handedness
 	float2 Tex      : TEXCOORD3;
 	float  TessLevel : TEXCOORD4;  // для debug heatmap
 };
@@ -195,7 +218,9 @@ DSOutput DomainDS(
 	// Шаг 1 domain: интерполяция атрибутов на ПЛОСКОМ (или сглаженном) треугольнике
 	float3 posL = patch[0].PosL * u + patch[1].PosL * v + patch[2].PosL * w;
 	float3 nL = normalize(patch[0].NormalL * u + patch[1].NormalL * v + patch[2].NormalL * w);
-	float3 tL = normalize(patch[0].TangentL * u + patch[1].TangentL * v + patch[2].TangentL * w);
+	float4 tL4 = patch[0].TangentL * u + patch[1].TangentL * v + patch[2].TangentL * w;
+	float3 tL = normalize(tL4.xyz - dot(tL4.xyz, nL) * nL);
+	float tangentW = (abs(patch[0].TangentL.w) > 0.5f) ? sign(patch[0].TangentL.w) : 1.f;
 	float2 tex = patch[0].Tex * u + patch[1].Tex * v + patch[2].Tex * w;
 
 	// Шаг 2 domain: ВЫСОТА из displacement-текстуры (map_disp), не из вершины OBJ
@@ -210,16 +235,41 @@ DSOutput DomainDS(
 	float4 posW4 = mul(float4(posL, 1.f), gWorld);
 	float3 nW = normalize(mul(float4(nL, 0.f), gWorldInvTranspose).xyz);
 	float3 tW = normalize(mul(float4(tL, 0.f), gWorld).xyz);
-	// Gram-Schmidt: касательная ⊥ нормали в мире (для стабильного TBN)
 	tW = normalize(tW - dot(tW, nW) * nW);
 
 	DSOutput o;
 	o.PosW = posW4.xyz;
 	o.NormalW = nW;
-	o.TangentW = tW;
+	o.TangentW = float4(tW, tangentW);
 	o.PosH = mul(float4(posL, 1.f), gWorldViewProj);
 	o.Tex = tex;
 	o.TessLevel = tessLevel;
+	return o;
+}
+
+// -----------------------------------------------------------------------------
+// VS_GBuffer — камни без tess/displacement; выход = DSOutput → тот же PS
+// -----------------------------------------------------------------------------
+DSOutput VS_GBuffer(VSInput vin)
+{
+	float3 posL = vin.PosL;
+	float3 nL = normalize(vin.NormalL);
+	float4 tL4 = ResolveTangentL(nL, vin.TangentL);
+	float3 tL = tL4.xyz;
+	float2 tex = TransformUv(vin.Tex);
+
+	float4 posW4 = mul(float4(posL, 1.f), gWorld);
+	float3 nW = normalize(mul(float4(nL, 0.f), gWorldInvTranspose).xyz);
+	float3 tW = normalize(mul(float4(tL, 0.f), gWorld).xyz);
+	tW = normalize(tW - dot(tW, nW) * nW);
+
+	DSOutput o;
+	o.PosW = posW4.xyz;
+	o.NormalW = nW;
+	o.TangentW = float4(tW, tL4.w);
+	o.PosH = mul(float4(posL, 1.f), gWorldViewProj);
+	o.Tex = tex;
+	o.TessLevel = 1.f;
 	return o;
 }
 
@@ -231,21 +281,36 @@ float3 TessHeatmap(float t)
 	return lerp(c, float3(0.95, 0.25, 0.1), smoothstep(0.55, 1.f, t));
 }
 
+float3 SrgbToLinear(float3 srgb)
+{
+	float3 c = max(srgb, 0.0);
+	return pow(c, 2.2);
+}
+
+// Phong Ns → perceptual roughness (Disney-style approximation)
+float RoughnessFromNs(float ns)
+{
+	return saturate(sqrt(2.0 / (ns + 2.0)));
+}
+
 // Формат G-buffer (совпадает с deferred_lighting.hlsl)
 struct GBufferPack
 {
 	float4 AlbedoA    : SV_Target0;
 	float4 NormalW    : SV_Target1;
 	float4 PosWorld   : SV_Target2;
-	float4 KsRoughPad : SV_Target3;  // rgb = Ks, a = roughness
+	float4 PbrExtra   : SV_Target3;  // r=roughness, g=metallic, b=AO
 };
 
 // Perturbation: tangent space normal map → мировая нормаль (T, B, N)
-float3 NormalFromMap(float3 Ngeom, float3 Tgeom, float3 nMapSample)
+float3 NormalFromMap(float3 Ngeom, float3 Tgeom, float tangentW, float3 nMapSample, float flipY)
 {
 	float3 nTex = nMapSample * 2.f - 1.f;       // [0,1] → [-1,1]
-	float3 B = cross(Ngeom, Tgeom);
-	return normalize(nTex.x * Tgeom + nTex.y * B + nTex.z * Ngeom);
+	if (flipY > 0.5f)
+		nTex.y = -nTex.y;
+	float3 T = normalize(Tgeom - dot(Tgeom, Ngeom) * Ngeom);
+	float3 B = cross(Ngeom, T) * tangentW;
+	return normalize(nTex.x * T + nTex.y * B + nTex.z * Ngeom);
 }
 
 // -----------------------------------------------------------------------------
@@ -262,9 +327,11 @@ GBufferPack PS(DSOutput pin)
 
 	// Шаг PS: normal map ПОСЛЕ displacement — меняет только освещение, не posL
 	float3 Ngeom = normalize(pin.NormalW);               // нормаль от смещённой поверхности (мир)
-	float3 Tgeom = pin.TangentW;                         // для базиса TBN
+	float3 Tgeom = pin.TangentW.xyz;                       // для базиса TBN
 	float3 nMap = gNormalMap.Sample(gSamLinearWrap, pin.Tex).rgb; // tangent-space normal
-	float3 N = (gHasNormalTexture > 0.5f) ? NormalFromMap(Ngeom, Tgeom, nMap) : Ngeom;
+	float3 N = (gHasNormalTexture > 0.5f)
+		? NormalFromMap(Ngeom, Tgeom, pin.TangentW.w, nMap, gNormalFlipY)
+		: Ngeom;
 
 	float3 alb;
 	if (gDebugMode > kDbgTessHeatmap - 0.5f && gDebugMode < kDbgTessHeatmap + 0.5f)
@@ -273,19 +340,41 @@ GBufferPack PS(DSOutput pin)
 		alb = float3(0.15, 0.85, 0.35);
 	else if (gDebugMode > kDbgTessNoDisp - 0.5f && gDebugMode < kDbgTessNoDisp + 0.5f)
 	{
-		// Приглушённый albedo, чтобы видеть «гладкий» tess без рельефа disp
-		float3 texRgb = gDiffuseMap.Sample(gSamLinearWrap, pin.Tex).rgb;
+		float3 texRgb = SrgbToLinear(gDiffuseMap.Sample(gSamLinearWrap, pin.Tex).rgb);
 		alb = gMatKd * lerp(float3(1, 1, 1), texRgb, gHasDiffuseTexture) * 0.65f;
 	}
 	else
 	{
-		float3 texRgb = gDiffuseMap.Sample(gSamLinearWrap, pin.Tex).rgb;
+		float3 texRgb = SrgbToLinear(gDiffuseMap.Sample(gSamLinearWrap, pin.Tex).rgb);
 		alb = gMatKd * lerp(float3(1, 1, 1), texRgb, gHasDiffuseTexture);
 	}
 
 	o.AlbedoA = float4(alb, 1.f);
 	o.NormalW = float4(N, 0.f);
 	o.PosWorld = float4(pin.PosW, 1.f);
-	o.KsRoughPad = float4(gMatKs, saturate(gMatNs / 128.f));
+
+	float roughness = RoughnessFromNs(gMatNsFallback) * gMatRoughness;
+	float metallic = gMatMetallic;
+	float ao = 1.f;
+	if (gHasRmTexture > 0.5f)
+	{
+		float4 arm = gRmMap.Sample(gSamLinearWrap, pin.Tex);
+		const float metalMul = (gMatMetallic > 0.001) ? gMatMetallic : 1.0;
+
+		// Fallback: rough-only map (R=roughness) вместо packed ARM
+		if (arm.g < 0.05 && arm.r > 0.05)
+		{
+			ao = 1.0;
+			roughness = arm.r * max(gMatRoughness, 0.001);
+			metallic = 0.0;
+		}
+		else
+		{
+			ao = arm.r;
+			roughness = arm.g * max(gMatRoughness, 0.001);
+			metallic = arm.b * metalMul;
+		}
+	}
+	o.PbrExtra = float4(saturate(roughness), saturate(metallic), saturate(ao), 1.f);
 	return o;
 }

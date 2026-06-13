@@ -3,6 +3,7 @@
 #include "../importers/Importer_Wavefront_ObjMtl.h"
 
 #include <algorithm>
+#include <cmath>
 #include <limits>
 
 using namespace DirectX;
@@ -54,6 +55,126 @@ Aabb ComputeMeshLocalBounds(const ObjMeshData& mesh)
 	for (const XMFLOAT3& p : mesh.Positions)
 		b.ExpandPoint(p);
 	return b;
+}
+
+Aabb ComputeSubmeshLocalBounds(const ObjMeshData& mesh, const ObjSubmeshRange& submesh)
+{
+	Aabb b{};
+	if (mesh.Positions.empty() || submesh.IndexCount == 0)
+		return b;
+
+	bool havePoint = false;
+	for (uint32_t i = 0; i < submesh.IndexCount; ++i)
+	{
+		const uint32_t vi = mesh.Indices32[submesh.StartIndexLocation + i];
+		if (vi >= mesh.Positions.size())
+			continue;
+		if (!havePoint)
+		{
+			b.Min = mesh.Positions[vi];
+			b.Max = mesh.Positions[vi];
+			havePoint = true;
+		}
+		else
+		{
+			b.ExpandPoint(mesh.Positions[vi]);
+		}
+	}
+	return b;
+}
+
+bool ComputeSponzaCourtyardAnchor(const ObjMeshData& mesh, XMFLOAT3& outAnchor)
+{
+	const Aabb full = ComputeMeshLocalBounds(mesh);
+	if (!full.IsValid() || mesh.Submeshes.empty())
+		return false;
+
+	const float spanY = full.Max.y - full.Min.y;
+	const float targetY = full.Min.y + spanY * 0.35f;
+
+	float bestScore = -1.0f;
+	XMFLOAT3 bestAnchor = {};
+
+	for (const ObjSubmeshRange& sm : mesh.Submeshes)
+	{
+		const Aabb b = ComputeSubmeshLocalBounds(mesh, sm);
+		if (!b.IsValid())
+			continue;
+
+		const float height = b.Max.y - b.Min.y;
+		if (height > 1.0f)
+			continue;
+
+		const float areaXZ = (b.Max.x - b.Min.x) * (b.Max.z - b.Min.z);
+		if (areaXZ < 100.0f)
+			continue;
+
+		const float centerY = (b.Min.y + b.Max.y) * 0.5f;
+		const float yDistance = fabsf(centerY - targetY);
+		const float score = areaXZ / (1.0f + yDistance);
+		if (score <= bestScore)
+			continue;
+
+		bestScore = score;
+		bestAnchor = {
+			(b.Min.x + b.Max.x) * 0.5f,
+			centerY,
+			(b.Min.z + b.Max.z) * 0.5f
+		};
+	}
+
+	if (bestScore < 0.0f)
+	{
+		outAnchor = {
+			(full.Min.x + full.Max.x) * 0.5f,
+			targetY,
+			(full.Min.z + full.Max.z) * 0.5f
+		};
+		return false;
+	}
+
+	outAnchor = bestAnchor;
+	return true;
+}
+
+float ComputeSponzaSecondFloorY(const Aabb& sponzaLocalBounds)
+{
+	if (!sponzaLocalBounds.IsValid())
+		return 0.f;
+
+	const float spanY = sponzaLocalBounds.Max.y - sponzaLocalBounds.Min.y;
+	return sponzaLocalBounds.Min.y + spanY * 0.46f;
+}
+
+float ComputeSponzaThirdFloorY(const Aabb& sponzaLocalBounds)
+{
+	if (!sponzaLocalBounds.IsValid())
+		return 0.f;
+
+	const float spanY = sponzaLocalBounds.Max.y - sponzaLocalBounds.Min.y;
+	return sponzaLocalBounds.Min.y + spanY * 0.57f;
+}
+
+XMMATRIX ComposeWorldOnFloor(const Aabb& localBounds, float uniformScale, float rotationY, XMFLOAT3 anchorOnFloor)
+{
+	if (!localBounds.IsValid())
+		return XMMatrixIdentity();
+
+	const XMFLOAT3 pivot = {
+		(localBounds.Min.x + localBounds.Max.x) * 0.5f,
+		localBounds.Min.y,
+		(localBounds.Min.z + localBounds.Max.z) * 0.5f
+	};
+
+	const XMMATRIX scaleRot =
+		XMMatrixTranslation(-pivot.x, -pivot.y, -pivot.z) *
+		XMMatrixScaling(uniformScale, uniformScale, uniformScale) *
+		XMMatrixRotationY(rotationY);
+
+	const Aabb scaled = TransformAabb(localBounds, scaleRot);
+	const float liftY = anchorOnFloor.y - scaled.Min.y;
+
+	return scaleRot * XMMatrixTranslation(anchorOnFloor.x, liftY, anchorOnFloor.z);
 }
 
 Aabb TransformAabb(const Aabb& local, CXMMATRIX world)

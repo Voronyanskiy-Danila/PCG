@@ -1,3 +1,5 @@
+// deferred_lighting.hlsl — Lab 8: deferred PBR (Cook-Torrance GGX + IBL)
+
 Texture2D    gBufAlbedo   : register(t0);
 Texture2D    gBufNormal   : register(t1);
 Texture2D    gBufPosition : register(t2);
@@ -6,6 +8,7 @@ Texture2D    gBufMatExtra : register(t3);
 static const uint kLightTypeDirectional = 0;
 static const uint kLightTypePoint = 1;
 static const uint kLightTypeSpot = 2;
+static const float kPi = 3.14159265;
 
 struct GpuLight
 {
@@ -22,6 +25,9 @@ struct GpuLight
 
 StructuredBuffer<GpuLight> gLights : register(t4);
 Texture2DArray<float> gShadowMap : register(t5);
+TextureCube gIrradianceMap : register(t6);
+TextureCube gPrefilteredEnvMap : register(t7);
+Texture2D   gIntegrationMap : register(t8);
 
 cbuffer LightingCB : register(b0)
 {
@@ -29,9 +35,9 @@ cbuffer LightingCB : register(b0)
 	float4 gDirLightDirection;
 	float4 gDirColorIntensity;
 	uint   gNumLights;
-	uint   _p0;
-	uint   _p1;
-	uint   _p2;
+	float  gMaxEnvMipLevel;
+	float  gHasIblEnv;
+	float  _padLighting;
 };
 
 cbuffer ShadowLightingCB : register(b1)
@@ -46,6 +52,7 @@ cbuffer ShadowLightingCB : register(b1)
 
 SamplerState gPointClamp : register(s0);
 SamplerComparisonState gShadowSampler : register(s1);
+SamplerState gIblSampler : register(s2);
 
 struct VSQuadOut
 {
@@ -91,7 +98,6 @@ float SampleShadowPcf(uint cascade, float3 worldPos)
 	float2 uv = proj.xy * 0.5f + 0.5f;
 	uv.y = 1.0f - uv.y;
 
-	// Orthographic light projection: clip Z is already in [0, 1] for D3D.
 	float depth = saturate(proj.z);
 
 	if (any(uv < 0.0f) || any(uv > 1.0f))
@@ -145,6 +151,122 @@ float CalcDirectionalShadow(float3 worldPos)
 	return s;
 }
 
+float DistributionGGX(float3 N, float3 H, float roughness)
+{
+	float a = roughness * roughness;
+	float a2 = a * a;
+	float NdotH = saturate(dot(N, H));
+	float denom = NdotH * NdotH * (a2 - 1.0) + 1.0;
+	return a2 / max(kPi * denom * denom, 1e-4);
+}
+
+float GeometrySchlickGGX(float NdotX, float roughness)
+{
+	float r = roughness + 1.0;
+	float k = (r * r) / 8.0;
+	return NdotX / max(NdotX * (1.0 - k) + k, 1e-4);
+}
+
+float GeometrySmith(float3 N, float3 V, float3 L, float roughness)
+{
+	float gv = GeometrySchlickGGX(saturate(dot(N, V)), roughness);
+	float gl = GeometrySchlickGGX(saturate(dot(N, L)), roughness);
+	return gv * gl;
+}
+
+float3 FresnelSchlick(float cosTheta, float3 F0)
+{
+	return F0 + (1.0 - F0) * pow(1.0 - cosTheta, 5.0);
+}
+
+float3 FresnelSchlickRoughness(float cosTheta, float3 F0, float roughness)
+{
+	float3 oneMinusRoughness = float3(1.0 - roughness, 1.0 - roughness, 1.0 - roughness);
+	return F0 + (max(oneMinusRoughness, F0) - F0) * pow(1.0 - cosTheta, 5.0);
+}
+
+// PBR attenuation: inverse-square (+1 avoids singularity) with smooth range cutoff
+float PbrLightAttenuation(float dist, float range)
+{
+	float distAtt = 1.0 / (dist * dist + 1.0);
+	float rangeAtt = saturate(1.0 - pow(dist / max(range, 1e-4), 4.0));
+	rangeAtt *= rangeAtt;
+	return distAtt * rangeAtt;
+}
+
+// Cook-Torrance BRDF (metallic workflow)
+float3 EvaluatePBR(
+	float3 N,
+	float3 V,
+	float3 L,
+	float3 albedo,
+	float roughness,
+	float metallic,
+	float3 radiance,
+	float atten)
+{
+	float NdotL = saturate(dot(N, L));
+	if (NdotL <= 0.0)
+		return float3(0, 0, 0);
+
+	float3 H = normalize(V + L);
+	float3 F0 = lerp(float3(0.04, 0.04, 0.04), albedo, metallic);
+
+	float NDF = DistributionGGX(N, H, roughness);
+	float G = GeometrySmith(N, V, L, roughness);
+	float3 F = FresnelSchlick(saturate(dot(H, V)), F0);
+
+	float3 numerator = NDF * G * F;
+	float denom = max(4.0 * saturate(dot(N, V)) * NdotL, 1e-4);
+	float3 specular = numerator / denom;
+
+	float3 kS = F;
+	float3 kD = (1.0 - kS) * (1.0 - metallic);
+	float3 diffuse = kD * albedo / kPi;
+
+	return (diffuse + specular) * radiance * NdotL * atten;
+}
+
+// Split-sum IBL (irradiance + prefiltered env + BRDF LUT from Stuff/)
+float3 EvaluateIBL(
+	float3 N,
+	float3 V,
+	float3 albedo,
+	float roughness,
+	float metallic,
+	float ao)
+{
+	float3 F0 = lerp(float3(0.04, 0.04, 0.04), albedo, metallic);
+	float NdotV = saturate(dot(N, V));
+	float3 kS = FresnelSchlickRoughness(NdotV, F0, roughness);
+	float3 kD = (1.0 - kS) * (1.0 - metallic);
+
+	float3 irradiance = gIrradianceMap.Sample(gIblSampler, N).rgb;
+	float3 diffuse = irradiance * albedo;
+
+	float3 R = reflect(-V, N);
+	float lod = roughness * gMaxEnvMipLevel;
+	float3 prefiltered = gPrefilteredEnvMap.SampleLevel(gIblSampler, R, lod).rgb;
+	float2 brdf = gIntegrationMap.Sample(gIblSampler, float2(NdotV, roughness)).rg;
+	float3 specular = prefiltered * (F0 * brdf.x + brdf.y);
+
+	return (kD * diffuse + specular) * ao;
+}
+
+float3 SampleEnvironmentBackground(float2 uv)
+{
+	const float3 flatSky = float3(0.04, 0.05, 0.08);
+	if (gHasIblEnv < 0.5f)
+		return flatSky;
+
+	float2 ndc = float2(uv.x * 2.f - 1.f, 1.f - uv.y * 2.f);
+	float3 rightW = normalize(float3(gViewMatrix._11, gViewMatrix._21, gViewMatrix._31));
+	float3 upW = normalize(float3(gViewMatrix._12, gViewMatrix._22, gViewMatrix._32));
+	float3 fwdW = normalize(-float3(gViewMatrix._13, gViewMatrix._23, gViewMatrix._33));
+	float3 dirW = normalize(fwdW + rightW * ndc.x * 0.75 + upW * ndc.y * 0.75);
+	return gPrefilteredEnvMap.SampleLevel(gIblSampler, dirW, 0).rgb;
+}
+
 float4 PS_Light(VSQuadOut pin, float4 posSs : SV_Position) : SV_Target
 {
 	uint w, h, levels;
@@ -157,49 +279,35 @@ float4 PS_Light(VSQuadOut pin, float4 posSs : SV_Position) : SV_Target
 
 	float4 nS = gBufNormal.Sample(gPointClamp, uv);
 	float nLen2 = dot(nS.xyz, nS.xyz);
-	if (nLen2 < 1e-6f)
-		return float4(0.04f, 0.05f, 0.08f, 1.f);
-
-	float3 N = nS.xyz * rsqrt(nLen2);
 
 	float4 pS = gBufPosition.Sample(gPointClamp, uv);
 	float3 pw = pS.xyz;
-	if (dot(pw, pw) < 1e-4f)
-		return float4(0.04f, 0.05f, 0.08f, 1.f);
+
+	if (nLen2 < 1e-6f || dot(pw, pw) < 1e-4f)
+		return float4(ReinhardToneMap(SampleEnvironmentBackground(uv)), 1.f);
+
+	float3 N = nS.xyz * rsqrt(nLen2);
 
 	float4 mx = gBufMatExtra.Sample(gPointClamp, uv);
-	float3 matKs = mx.rgb;
-	float specNorm = saturate(mx.a);
+	float roughness = max(mx.r, 0.04);
+	float metallic = saturate(mx.g);
+	float ao = saturate(mx.b);
 
 	float3 eye = gEyeWorld.xyz;
 	float3 vw = eye - pw;
 	float vLen2 = dot(vw, vw);
 	float3 V = vLen2 > 1e-10f ? vw * rsqrt(vLen2) : float3(0.f, 0.f, -1.f);
 
-	float3 diffuseAcc = float3(0, 0, 0);
-	float3 specAcc = float3(0, 0, 0);
-
-	const float shininess = lerp(1.f, 256.f, specNorm * specNorm);
+	float3 Lo = float3(0, 0, 0);
 
 	float3 dd = gDirLightDirection.xyz;
 	float dDirs = dot(dd, dd);
-	if (dDirs > 1e-8f && dot(pw, pw) > 1e-4f)
+	if (dDirs > 1e-8f)
 	{
 		float3 L = normalize(-dd);
 		float3 sunCol = gDirColorIntensity.xyz * gDirColorIntensity.w;
 		float shadow = CalcDirectionalShadow(pw);
-
-		float NdotL = saturate(dot(N, L));
-		float3 diffuse = NdotL * albedo;
-
-		float3 hv = L + V;
-		float hh = dot(hv, hv);
-		float3 H = hh > 1e-12f ? hv * rsqrt(hh) : N;
-		float nh = saturate(dot(N, H));
-		float specAmt = pow(max(nh, 0.f), shininess) * NdotL;
-
-		diffuseAcc += diffuse * sunCol * shadow;
-		specAcc += specAmt * matKs * sunCol * shadow;
+		Lo += EvaluatePBR(N, V, L, albedo, roughness, metallic, sunCol, shadow);
 	}
 
 	const uint MAX_L = 48u;
@@ -221,20 +329,8 @@ float4 PS_Light(VSQuadOut pin, float4 posSs : SV_Position) : SV_Target
 				continue;
 
 			float3 L = toL / dist;
-			float NdotL = saturate(dot(N, L));
-			float3 diffuse = NdotL * albedo;
-
-			float3 hvp = L + V;
-			float hhp = dot(hvp, hvp);
-			float3 Hpt = hhp > 1e-12f ? hvp * rsqrt(hhp) : N;
-			float nhP = saturate(dot(N, Hpt));
-			float specAmt = pow(max(nhP, 0.f), shininess) * NdotL;
-
-			float rp = saturate(1.f - dist / max(Ld.Range, 1e-4f));
-			float att = rp * rp;
-
-			diffuseAcc += diffuse * col * att;
-			specAcc += specAmt * matKs * col * att;
+			float att = PbrLightAttenuation(dist, Ld.Range);
+			Lo += EvaluatePBR(N, V, L, albedo, roughness, metallic, col, att);
 		}
 		else if (Ld.Type == kLightTypeSpot)
 		{
@@ -256,25 +352,12 @@ float4 PS_Light(VSQuadOut pin, float4 posSs : SV_Position) : SV_Target
 			if (spot <= 0.f)
 				continue;
 
-			float NdotL = saturate(dot(N, L));
-			float3 diffuse = NdotL * albedo;
-
-			float3 hvs = L + V;
-			float hhs = dot(hvs, hvs);
-			float3 Hst = hhs > 1e-12f ? hvs * rsqrt(hhs) : N;
-			float nhS = saturate(dot(N, Hst));
-			float specAmt = pow(max(nhS, 0.f), shininess) * NdotL;
-
-			float rq = saturate(1.f - dist / max(Ld.Range, 1e-4f));
-			float att = rq * rq * spot;
-
-			diffuseAcc += diffuse * col * att;
-			specAcc += specAmt * matKs * col * att;
+			float att = PbrLightAttenuation(dist, Ld.Range) * spot;
+			Lo += EvaluatePBR(N, V, L, albedo, roughness, metallic, col, att);
 		}
 	}
 
-	float ambient = 0.12f;
-	float3 hdrLinear = diffuseAcc + specAcc + ambient * albedo;
+	float3 hdrLinear = Lo + EvaluateIBL(N, V, albedo, roughness, metallic, ao);
 
 	return float4(ReinhardToneMap(hdrLinear), 1.f);
 }

@@ -1,0 +1,12 @@
+newmtl Cerberus
+Ka 0.15 0.15 0.15
+Kd 1.0 1.0 1.0
+Ks 0.35 0.35 0.35
+Ns 64.0
+Pr 1.0
+Pm 1.0
+PcUv 1 -1
+PcNormalFlip 0
+map_Kd Textures/Cerberus_A.jpg
+map_Bump Textures/Cerberus_N.jpg
+map_ARM Textures/Cerberus_ARM.jpg
