@@ -14,6 +14,9 @@
 // Lab 4 доп:
 //   Далёкие инстансы камней — billboards в G-buffer вместо tess mesh (F7)
 //
+// Lab 5 доп:
+//   Круглые партиклы — 2D SDF круга в PS (particles.hlsl), альфа-блендинг
+//
 // Lab 3:
 //   1) Rock 07 + normal/displacement maps
 //   2) Tessellation + displacement (deferred_tessellation.hlsl)

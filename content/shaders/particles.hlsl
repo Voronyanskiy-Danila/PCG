@@ -1,4 +1,5 @@
 // particles.hlsl — Lab 5: compute (Append/Consume) + GS billboards
+// Lab 5 доп: круглые партиклы через 2D SDF в PS (мягкий край через fwidth)
 
 cbuffer ParticleSimCB : register(b0)
 {
@@ -91,7 +92,7 @@ VSOut VS_Particle(uint id : SV_VertexID)
 	return o;
 }
 
-[maxvertexcount(4)]
+[maxvertexcount(6)]
 void GS_Billboard(point VSOut input[1], inout TriangleStream<GSOut> triStream)
 {
 	VSOut pin = input[0];
@@ -100,34 +101,60 @@ void GS_Billboard(point VSOut input[1], inout TriangleStream<GSOut> triStream)
 	float3 right = gCameraRight * halfSize;
 	float3 up = gCameraUp * halfSize;
 
-	float3 corners[4] = {
-		pin.Pos - right - up,
-		pin.Pos + right - up,
-		pin.Pos + right + up,
-		pin.Pos - right + up
-	};
+	const float3 bl = pin.Pos - right - up;
+	const float3 br = pin.Pos + right - up;
+	const float3 tl = pin.Pos - right + up;
+	const float3 tr = pin.Pos + right + up;
 
-	float2 uvs[4] = {
-		float2(0.0f, 1.0f),
-		float2(1.0f, 1.0f),
-		float2(1.0f, 0.0f),
-		float2(0.0f, 0.0f)
-	};
+	GSOut o;
+	o.Color = pin.Color;
 
-	[unroll]
-	for (uint i = 0; i < 4u; ++i)
-	{
-		GSOut o;
-		o.PosH = mul(float4(corners[i], 1.0f), gViewProj);
-		o.Uv = uvs[i];
-		o.Color = pin.Color;
-		triStream.Append(o);
-	}
+	o.PosH = mul(float4(bl, 1.0f), gViewProj);
+	o.Uv = float2(0.0f, 1.0f);
+	triStream.Append(o);
 
+	o.PosH = mul(float4(br, 1.0f), gViewProj);
+	o.Uv = float2(1.0f, 1.0f);
+	triStream.Append(o);
+
+	o.PosH = mul(float4(tl, 1.0f), gViewProj);
+	o.Uv = float2(0.0f, 0.0f);
+	triStream.Append(o);
 	triStream.RestartStrip();
+
+	o.PosH = mul(float4(br, 1.0f), gViewProj);
+	o.Uv = float2(1.0f, 1.0f);
+	triStream.Append(o);
+
+	o.PosH = mul(float4(tr, 1.0f), gViewProj);
+	o.Uv = float2(1.0f, 0.0f);
+	triStream.Append(o);
+
+	o.PosH = mul(float4(tl, 1.0f), gViewProj);
+	o.Uv = float2(0.0f, 0.0f);
+	triStream.Append(o);
+	triStream.RestartStrip();
+}
+
+// 2D signed distance field: отрицательно внутри круга, положительно снаружи.
+float SdCircle(float2 p, float radius)
+{
+	return length(p) - radius;
 }
 
 float4 PS_Particle(GSOut pin) : SV_TARGET
 {
-	return pin.Color;
+	// UV квадрата billboard → локальные координаты, центр (0,0), радиус 1.
+	const float2 p = pin.Uv * 2.0f - 1.0f;
+	const float sdf = SdCircle(p, 1.0f);
+	const float aa = max(fwidth(sdf), 1e-4f);
+	const float coverage = saturate(0.5f - sdf / aa);
+
+	float4 col = pin.Color;
+	const float core = saturate(-sdf * 2.2f);
+	col.rgb *= lerp(0.88f, 1.18f, core);
+	col.a *= coverage;
+	if (col.a <= (1.0f / 255.0f))
+		discard;
+	return col;
 }

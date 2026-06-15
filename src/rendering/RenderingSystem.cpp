@@ -221,6 +221,21 @@ void RenderingSystem::BuildParticleDrawPipeline(ID3D12Device* device)
 		serialized->GetBufferSize(),
 		IID_PPV_ARGS(&m_rsParticleDraw)));
 
+	auto makeParticleBlendDesc = []() {
+		CD3DX12_BLEND_DESC blend(D3D12_DEFAULT);
+		auto& rt = blend.RenderTarget[0];
+		rt.BlendEnable = TRUE;
+		rt.LogicOpEnable = FALSE;
+		rt.SrcBlend = D3D12_BLEND_SRC_ALPHA;
+		rt.DestBlend = D3D12_BLEND_ONE;
+		rt.BlendOp = D3D12_BLEND_OP_ADD;
+		rt.SrcBlendAlpha = D3D12_BLEND_ONE;
+		rt.DestBlendAlpha = D3D12_BLEND_ONE;
+		rt.BlendOpAlpha = D3D12_BLEND_OP_ADD;
+		rt.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+		return blend;
+	};
+
 	D3D12_GRAPHICS_PIPELINE_STATE_DESC pso{};
 	pso.InputLayout = {nullptr, 0u};
 	pso.pRootSignature = m_rsParticleDraw.Get();
@@ -230,10 +245,10 @@ void RenderingSystem::BuildParticleDrawPipeline(ID3D12Device* device)
 	CD3DX12_RASTERIZER_DESC rs(D3D12_DEFAULT);
 	rs.CullMode = D3D12_CULL_MODE_NONE;
 	pso.RasterizerState = rs;
-	pso.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
+	pso.BlendState = makeParticleBlendDesc();
 	CD3DX12_DEPTH_STENCIL_DESC ds(D3D12_DEFAULT);
 	ds.DepthEnable = TRUE;
-	ds.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
+	ds.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
 	ds.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
 	pso.DepthStencilState = ds;
 	pso.SampleMask = UINT_MAX;
