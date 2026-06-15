@@ -894,7 +894,8 @@ void RenderingSystem::RunPostProcess(
 		viewport,
 		scissor,
 		m_postVignetteEnabled,
-		m_postChromaticEnabled);
+		m_postChromaticEnabled,
+		m_postGrayscaleEnabled);
 }
 
 void RenderingSystem::SetLights(const GpuLight* lights, UINT count)

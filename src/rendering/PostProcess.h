@@ -7,7 +7,7 @@
 #include <d3d12.h>
 #include <wrl/client.h>
 
-// Lab 7: scene RT → (vignette → temp) → (chromatic aberration → back buffer)
+// Lab 7: scene RT → optional chain (vignette / chromatic / grayscale) → back buffer
 class PostProcess
 {
 public:
@@ -34,7 +34,8 @@ public:
 		const D3D12_VIEWPORT& viewport,
 		const D3D12_RECT& scissor,
 		bool vignetteEnabled,
-		bool chromaticEnabled);
+		bool chromaticEnabled,
+		bool grayscaleEnabled);
 
 private:
 	void TransitionResource(
@@ -60,9 +61,11 @@ private:
 	Microsoft::WRL::ComPtr<ID3DBlob> m_vsBc;
 	Microsoft::WRL::ComPtr<ID3DBlob> m_psVignetteBc;
 	Microsoft::WRL::ComPtr<ID3DBlob> m_psChromaticBc;
+	Microsoft::WRL::ComPtr<ID3DBlob> m_psGrayscaleBc;
 	Microsoft::WRL::ComPtr<ID3D12RootSignature> m_rootSignature;
 	Microsoft::WRL::ComPtr<ID3D12PipelineState> m_psoVignette;
 	Microsoft::WRL::ComPtr<ID3D12PipelineState> m_psoChromatic;
+	Microsoft::WRL::ComPtr<ID3D12PipelineState> m_psoGrayscale;
 
 	std::unique_ptr<GpuUploadBuffer<PostProcessConstants>> m_constantsCb;
 

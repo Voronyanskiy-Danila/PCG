@@ -1,4 +1,4 @@
-// post_process.hlsl — Lab 7: fullscreen vignette + chromatic aberration
+// post_process.hlsl — Lab 7: fullscreen vignette + chromatic aberration + grayscale
 
 Texture2D gSceneColor : register(t0);              // вход: уже отрендеренная сцена (lighting + particles)
 SamplerState gLinearClamp : register(s0);          // линейная фильтрация, UV clamp к краям [0,1]
@@ -63,4 +63,16 @@ float4 PS_ChromaticAberration(VSOut pin, float4 posSs : SV_Position) : SV_TARGET
 	float b = gSceneColor.Sample(gLinearClamp, uv + dir).b; // синий: sample правее/от центра
 	float a = gSceneColor.Sample(gLinearClamp, uv).a;       // alpha из центрального sample
 	return float4(r, g, b, a);                       // собранный RGB с расслоением по краям
+}
+
+// Post 3: чёрно-белый фильтр (luminance по Rec. 709)
+float4 PS_Grayscale(VSOut pin, float4 posSs : SV_Position) : SV_TARGET
+{
+	uint w, h, levels;
+	gSceneColor.GetDimensions(0, w, h, levels);
+	float2 uv = ScreenUv(posSs, w, h);
+
+	float4 c = gSceneColor.Sample(gLinearClamp, uv);
+	float luma = dot(c.rgb, float3(0.299, 0.587, 0.114));
+	return float4(luma, luma, luma, c.a);
 }

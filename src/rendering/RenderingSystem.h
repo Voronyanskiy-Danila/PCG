@@ -120,11 +120,16 @@ public:
 		DirectX::FXMVECTOR cameraUp);
 
 	D3D12_CPU_DESCRIPTOR_HANDLE SceneColorRtv() const { return m_post.SceneRtv(); }
-	bool UsesSceneColorTarget() const { return m_postVignetteEnabled || m_postChromaticEnabled; }
+	bool UsesSceneColorTarget() const
+	{
+		return m_postVignetteEnabled || m_postChromaticEnabled || m_postGrayscaleEnabled;
+	}
 	void SetPostVignetteEnabled(bool enabled) { m_postVignetteEnabled = enabled; }
 	void SetPostChromaticEnabled(bool enabled) { m_postChromaticEnabled = enabled; }
+	void SetPostGrayscaleEnabled(bool enabled) { m_postGrayscaleEnabled = enabled; }
 	bool PostVignetteEnabled() const { return m_postVignetteEnabled; }
 	bool PostChromaticEnabled() const { return m_postChromaticEnabled; }
+	bool PostGrayscaleEnabled() const { return m_postGrayscaleEnabled; }
 
 	void RunPostProcess(
 		ID3D12GraphicsCommandList* cmd,
@@ -148,6 +153,7 @@ private:
 	PostProcess m_post{};
 	bool m_postVignetteEnabled = true;
 	bool m_postChromaticEnabled = true;
+	bool m_postGrayscaleEnabled = false;
 
 	Microsoft::WRL::ComPtr<ID3DBlob> m_tessVsBc;
 	Microsoft::WRL::ComPtr<ID3DBlob> m_tessSolidVsBc;

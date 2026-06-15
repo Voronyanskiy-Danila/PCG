@@ -4,6 +4,8 @@
 
 #include "../rendering/d3d12/D3d12_RenderHelpers.h"           // CompileShader, ThrowIfFailed
 
+#include <vector>
+
 using Microsoft::WRL::ComPtr;                                 // умные указатели COM (ID3D12*)
 using namespace DirectX;                                        // XMFLOAT и т.д. (если понадобится)
 
@@ -58,8 +60,10 @@ void PostProcess::Initialize(ID3D12Device* device, DXGI_FORMAT rtFormat)
 		L"content/shaders/post_process.hlsl", nullptr, "PS_Vignette", "ps_5_0");
 	m_psChromaticBc = Dx12Utils::CompileShader(                 // PS_ChromaticAberration — R/B shift
 		L"content/shaders/post_process.hlsl", nullptr, "PS_ChromaticAberration", "ps_5_0");
+	m_psGrayscaleBc = Dx12Utils::CompileShader(
+		L"content/shaders/post_process.hlsl", nullptr, "PS_Grayscale", "ps_5_0");
 
-	BuildPipelines(device);                                     // root signature + 2 PSO
+	BuildPipelines(device);                                     // root signature + post PSOs
 }
 
 // При изменении размера окна — пересоздать sceneColor и tempColor
@@ -233,6 +237,7 @@ void PostProcess::BuildPipelines(ID3D12Device* device)
 
 	m_psoVignette = makePso(m_psVignetteBc.Get());             // PSO виньетки
 	m_psoChromatic = makePso(m_psChromaticBc.Get());          // PSO хроматической аберрации
+	m_psoGrayscale = makePso(m_psGrayscaleBc.Get());          // PSO чёрно-белого фильтра
 }
 
 // Каждый кадр: sceneColor → (temp) → back buffer; вызывается из RenderingSystem::RunPostProcess
@@ -247,12 +252,24 @@ void PostProcess::Run(
 	const D3D12_VIEWPORT& viewport,                           // viewport окна
 	const D3D12_RECT& scissor,                                  // scissor окна
 	bool vignetteEnabled,                                       // F2 — виньетка
-	bool chromaticEnabled)                                      // F4 — хроматика
+	bool chromaticEnabled,                                      // F4 — хроматика
+	bool grayscaleEnabled)                                      // F8 — grayscale
 {
-	if (!cmd || !backBuffer || !m_sceneColor || !m_psoVignette || !m_psoChromatic || !m_constantsCb)
+	if (!cmd || !backBuffer || !m_sceneColor || !m_psoVignette || !m_psoChromatic || !m_psoGrayscale || !m_constantsCb)
 		return;                                                 // не готовы ресурсы
-	if (!vignetteEnabled && !chromaticEnabled)
-		return;                                                 // оба off — post не нужен (early out)
+	if (!vignetteEnabled && !chromaticEnabled && !grayscaleEnabled)
+		return;                                                 // все off — post не нужен
+
+	std::vector<ID3D12PipelineState*> passes;
+	passes.reserve(3u);
+	if (vignetteEnabled)
+		passes.push_back(m_psoVignette.Get());
+	if (chromaticEnabled)
+		passes.push_back(m_psoChromatic.Get());
+	if (grayscaleEnabled)
+		passes.push_back(m_psoGrayscale.Get());
+	if (passes.empty())
+		return;
 
 	PostProcessConstants cb{};                                  // дефолты strength/power из struct
 	m_constantsCb->CopyData(0, cb);                             // upload CB на GPU
@@ -276,6 +293,7 @@ void PostProcess::Run(
 
 	D3D12_CPU_DESCRIPTOR_HANDLE tempRtvHandle = SceneRtv();     // RTV temp = второй в heap
 	tempRtvHandle.ptr += m_rtvIncrement;
+	const D3D12_CPU_DESCRIPTOR_HANDLE sceneRtvHandle = SceneRtv();
 
 	TransitionResource(                                         // scene: RT → readable в PS
 		cmd,
@@ -290,41 +308,64 @@ void PostProcess::Run(
 		backBufferState,
 		D3D12_RESOURCE_STATE_RENDER_TARGET);
 
-	if (vignetteEnabled && chromaticEnabled)                    // оба эффекта: два pass через temp
+	for (size_t i = 0; i < passes.size(); ++i)
 	{
-		TransitionResource(                                     // temp → RT для записи vignette
+		const bool isLast = (i + 1u == passes.size());
+		const CD3DX12_GPU_DESCRIPTOR_HANDLE inputSrv = (i % 2u == 0u) ? sceneSrvGpu : tempSrvGpu;
+
+		if (isLast)
+		{
+			cmd->OMSetRenderTargets(1u, &backBufferRtv, FALSE, nullptr);
+		}
+		else if (i % 2u == 0u)
+		{
+			TransitionResource(
+				cmd,
+				m_tempColor.Get(),
+				m_tempState,
+				D3D12_RESOURCE_STATE_RENDER_TARGET);
+			cmd->OMSetRenderTargets(1u, &tempRtvHandle, FALSE, nullptr);
+		}
+		else
+		{
+			TransitionResource(
+				cmd,
+				m_sceneColor.Get(),
+				m_sceneState,
+				D3D12_RESOURCE_STATE_RENDER_TARGET);
+			cmd->OMSetRenderTargets(1u, &sceneRtvHandle, FALSE, nullptr);
+		}
+
+		DrawFullscreen(cmd, passes[i], m_rootSignature.Get(), cbGpu, inputSrv);
+
+		if (!isLast)
+		{
+			if (i % 2u == 0u)
+			{
+				TransitionResource(
+					cmd,
+					m_tempColor.Get(),
+					m_tempState,
+					D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+			}
+			else
+			{
+				TransitionResource(
+					cmd,
+					m_sceneColor.Get(),
+					m_sceneState,
+					D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+			}
+		}
+	}
+
+	if (passes.size() > 1u)
+	{
+		TransitionResource(
 			cmd,
 			m_tempColor.Get(),
 			m_tempState,
 			D3D12_RESOURCE_STATE_RENDER_TARGET);
-
-		cmd->OMSetRenderTargets(1u, &tempRtvHandle, FALSE, nullptr); // RT = tempColor
-		DrawFullscreen(cmd, m_psoVignette.Get(), m_rootSignature.Get(), cbGpu, sceneSrvGpu); // pass 1
-
-		TransitionResource(                                     // temp → SRV для chromatic
-			cmd,
-			m_tempColor.Get(),
-			m_tempState,
-			D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-
-		cmd->OMSetRenderTargets(1u, &backBufferRtv, FALSE, nullptr); // RT = экран
-		DrawFullscreen(cmd, m_psoChromatic.Get(), m_rootSignature.Get(), cbGpu, tempSrvGpu); // pass 2
-
-		TransitionResource(                                     // temp обратно в RT (на следующий кадр)
-			cmd,
-			m_tempColor.Get(),
-			m_tempState,
-			D3D12_RESOURCE_STATE_RENDER_TARGET);
-	}
-	else if (vignetteEnabled)                                   // только виньетка → сразу на экран
-	{
-		cmd->OMSetRenderTargets(1u, &backBufferRtv, FALSE, nullptr);
-		DrawFullscreen(cmd, m_psoVignette.Get(), m_rootSignature.Get(), cbGpu, sceneSrvGpu);
-	}
-	else                                                        // только хроматика → scene → экран
-	{
-		cmd->OMSetRenderTargets(1u, &backBufferRtv, FALSE, nullptr);
-		DrawFullscreen(cmd, m_psoChromatic.Get(), m_rootSignature.Get(), cbGpu, sceneSrvGpu);
 	}
 
 	TransitionResource(                                         // scene снова RT для lighting след. кадра
