@@ -45,6 +45,6 @@ struct DeferredLightingConstants
 	UINT NumLights = 0;
 	float MaxEnvMipLevel = 4.0f;
 	float HasIblEnv = 0.0f;
-	float _Pad = 0.0f;
+	float UseBeckmann = 0.0f;
 };
 static_assert(sizeof(DeferredLightingConstants) == 64u, "DeferredLightingConstants size");

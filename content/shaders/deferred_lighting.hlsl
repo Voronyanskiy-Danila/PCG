@@ -1,4 +1,4 @@
-// deferred_lighting.hlsl — Lab 8: deferred PBR (Cook-Torrance GGX + IBL)
+// deferred_lighting.hlsl — Lab 8: deferred PBR (Cook-Torrance GGX / Beckmann + IBL)
 
 Texture2D    gBufAlbedo   : register(t0);
 Texture2D    gBufNormal   : register(t1);
@@ -37,7 +37,7 @@ cbuffer LightingCB : register(b0)
 	uint   gNumLights;
 	float  gMaxEnvMipLevel;
 	float  gHasIblEnv;
-	float  _padLighting;
+	float  gUseBeckmann;
 };
 
 cbuffer ShadowLightingCB : register(b1)
@@ -174,6 +174,32 @@ float GeometrySmith(float3 N, float3 V, float3 L, float roughness)
 	return gv * gl;
 }
 
+float DistributionBeckmann(float3 N, float3 H, float roughness)
+{
+	float a = roughness * roughness;
+	float a2 = a * a;
+	float NdotH = saturate(dot(N, H));
+	float NdotH2 = NdotH * NdotH;
+	if (NdotH2 < 1e-4)
+		return 0.0;
+	float tan2 = (1.0 - NdotH2) / NdotH2;
+	float expTerm = exp(-tan2 / max(a2, 1e-4));
+	return expTerm / max(kPi * a2 * NdotH2 * NdotH2, 1e-4);
+}
+
+float GeometrySchlickBeckmann(float NdotX, float roughness)
+{
+	float k = roughness * sqrt(2.0 / kPi);
+	return NdotX / max(NdotX * (1.0 - k) + k, 1e-4);
+}
+
+float GeometrySmithBeckmann(float3 N, float3 V, float3 L, float roughness)
+{
+	float gv = GeometrySchlickBeckmann(saturate(dot(N, V)), roughness);
+	float gl = GeometrySchlickBeckmann(saturate(dot(N, L)), roughness);
+	return gv * gl;
+}
+
 float3 FresnelSchlick(float cosTheta, float3 F0)
 {
 	return F0 + (1.0 - F0) * pow(1.0 - cosTheta, 5.0);
@@ -212,8 +238,13 @@ float3 EvaluatePBR(
 	float3 H = normalize(V + L);
 	float3 F0 = lerp(float3(0.04, 0.04, 0.04), albedo, metallic);
 
-	float NDF = DistributionGGX(N, H, roughness);
-	float G = GeometrySmith(N, V, L, roughness);
+	const bool useBeckmann = gUseBeckmann > 0.5;
+	float NDF = useBeckmann
+		? DistributionBeckmann(N, H, roughness)
+		: DistributionGGX(N, H, roughness);
+	float G = useBeckmann
+		? GeometrySmithBeckmann(N, V, L, roughness)
+		: GeometrySmith(N, V, L, roughness);
 	float3 F = FresnelSchlick(saturate(dot(H, V)), F0);
 
 	float3 numerator = NDF * G * F;

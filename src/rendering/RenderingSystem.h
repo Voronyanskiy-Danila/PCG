@@ -131,6 +131,9 @@ public:
 	bool PostChromaticEnabled() const { return m_postChromaticEnabled; }
 	bool PostGrayscaleEnabled() const { return m_postGrayscaleEnabled; }
 
+	void SetUseBeckmannBrdf(bool enabled) { m_useBeckmannBrdf = enabled; }
+	bool UseBeckmannBrdf() const { return m_useBeckmannBrdf; }
+
 	void RunPostProcess(
 		ID3D12GraphicsCommandList* cmd,
 		ID3D12Resource* backBuffer,
@@ -154,6 +157,7 @@ private:
 	bool m_postVignetteEnabled = true;
 	bool m_postChromaticEnabled = true;
 	bool m_postGrayscaleEnabled = false;
+	bool m_useBeckmannBrdf = false;
 
 	Microsoft::WRL::ComPtr<ID3DBlob> m_tessVsBc;
 	Microsoft::WRL::ComPtr<ID3DBlob> m_tessSolidVsBc;

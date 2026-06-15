@@ -934,7 +934,7 @@ void RenderingSystem::UpdateLightingFrameConstants(
 	c.NumLights = m_lightCount;
 	c.MaxEnvMipLevel = m_iblMaxEnvMipLevel;
 	c.HasIblEnv = m_iblPrefilteredEnv ? 1.0f : 0.0f;
-	c._Pad = 0.f;
+	c.UseBeckmann = m_useBeckmannBrdf ? 1.0f : 0.0f;
 	m_lightingCb->CopyData(0, c);
 }
 

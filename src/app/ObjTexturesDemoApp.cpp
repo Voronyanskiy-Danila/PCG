@@ -836,6 +836,7 @@ void ObjTexturesDemoApp::UpdateWindowCaption()
 	const wchar_t* vig = mRenderer.PostVignetteEnabled() ? L"on" : L"off";
 	const wchar_t* chr = mRenderer.PostChromaticEnabled() ? L"on" : L"off";
 	const wchar_t* gray = mRenderer.PostGrayscaleEnabled() ? L"on" : L"off";
+	const wchar_t* brdf = mRenderer.UseBeckmannBrdf() ? L"BKM" : L"GGX";
 	const wchar_t* vaseAnim = mVaseVertexAnimEnabled ? L"on" : L"off";
 	const wchar_t* lightRain = mLightRainEnabled ? L"on" : L"off";
 	const wchar_t* billboardLod = mBillboardLodEnabled ? L"on" : L"off";
@@ -846,21 +847,22 @@ void ObjTexturesDemoApp::UpdateWindowCaption()
 		swprintf_s(
 			cap,
 			160,
-			L"Lab 8 | %.0f FPS | rain %s vase %s | %s | vig %s chr %s gs %s",
+			L"Lab 8 | %.0f FPS | rain %s vase %s | %s | vig %s chr %s gs %s | %s",
 			mDisplayFps,
 			lightRain,
 			vaseAnim,
 			cbTag,
 			vig,
 			chr,
-			gray);
+			gray,
+			brdf);
 	}
 	else
 	{
 		swprintf_s(
 			cap,
 			160,
-			L"Lab 8 | %.0f FPS | rain %u/%u vase %s | perl %.0f | bb %u/%u %s | shd %u/%u | vig %s chr %s gs %s",
+			L"Lab 8 | %.0f FPS | rain %u/%u vase %s | perl %.0f | bb %u/%u %s | shd %u/%u | vig %s chr %s gs %s | %s",
 			mDisplayFps,
 			mLightRain.LandedDropCount(),
 			mLightRain.ActiveDropCount(),
@@ -873,7 +875,8 @@ void ObjTexturesDemoApp::UpdateWindowCaption()
 			mShadowDrawCallsNeeded,
 			vig,
 			chr,
-			gray);
+			gray,
+			brdf);
 	}
 	SetWindowText(mhMainWnd, cap);
 }
@@ -969,6 +972,12 @@ LRESULT ObjTexturesDemoApp::MsgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
 			if (wParam == VK_F8)
 			{
 				mRenderer.SetPostGrayscaleEnabled(!mRenderer.PostGrayscaleEnabled());
+				UpdateWindowCaption();
+				return 0;
+			}
+			if (wParam == VK_F9)
+			{
+				mRenderer.SetUseBeckmannBrdf(!mRenderer.UseBeckmannBrdf());
 				UpdateWindowCaption();
 				return 0;
 			}
