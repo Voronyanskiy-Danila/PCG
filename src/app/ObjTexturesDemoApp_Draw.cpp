@@ -158,7 +158,11 @@ void ObjTexturesDemoApp::RunShadowPass()
 	const ShadowLightingConstants& shadowLit = mRenderer.Shadows().GetLightingConstants();
 	const UINT shadowCbStride = mRenderer.ShadowDrawCbElementSize();
 	const UINT64 shadowCbGpuBase = mRenderer.ShadowDrawCb().Resource()->GetGPUVirtualAddress();
+	const UINT srvIncr = mCbvSrvUavDescriptorSize;
+	const CD3DX12_GPU_DESCRIPTOR_HANDLE srvHeapBase{mSrvHeap->GetGPUDescriptorHandleForHeapStart()};
 	UINT shadowCbSlot = 0u;
+
+	ID3D12DescriptorHeap* shadowHeaps[] = {mSrvHeap.Get()};
 
 	auto drawModelShadow = [&](const MeshGeometry& geo,
 							   const std::vector<DrawSubmesh>& submeshes,
@@ -187,12 +191,19 @@ void ObjTexturesDemoApp::RunShadowPass()
 				sd.VertexAnimPhase = sm.VertexAnimPhase;
 				sd.VertexAnimTime = mVertexAnimTime;
 			}
+			sd.AlphaTestEnable = sm.AlphaTest ? 1.f : 0.f;
+			sd.AlphaTestCutoff = sm.AlphaTestCutoff;
 
 			mRenderer.ShadowDrawCb().CopyData(static_cast<int>(shadowCbSlot), sd);
 			cmd->SetGraphicsRootConstantBufferView(
 				0u,
 				shadowCbGpuBase + static_cast<UINT64>(shadowCbSlot) * static_cast<UINT64>(shadowCbStride));
 
+			CD3DX12_GPU_DESCRIPTOR_HANDLE texH{srvHeapBase};
+			texH.Offset(sm.MaterialSrvBase, static_cast<INT>(srvIncr));
+			cmd->SetGraphicsRootDescriptorTable(1u, texH);
+
+			mRenderer.SetShadowPipeline(cmd, sm.AlphaTest);
 			cmd->DrawIndexedInstanced(sm.IndexCount, 1u, sm.StartIndexLocation, 0, 0u);
 			++shadowCbSlot;
 		}
@@ -201,12 +212,16 @@ void ObjTexturesDemoApp::RunShadowPass()
 	for (UINT cascade = 0u; cascade < kShadowCascadeCount; ++cascade)
 	{
 		mRenderer.BeginShadowPass(cmd, cascade);
+		cmd->SetDescriptorHeaps(1u, shadowHeaps);
 
 		if (mShadowDrawSponza && mSceneGeo && !mSceneSubmeshes.empty())
 			drawModelShadow(*mSceneGeo, mSceneSubmeshes, XMMatrixIdentity(), cascade);
 
 		if (mPropGeo && !mPropSubmeshes.empty())
 			drawModelShadow(*mPropGeo, mPropSubmeshes, XMLoadFloat4x4(&mPropWorld), cascade);
+
+		if (mShadowDrawFence && mFenceGeo && mFenceSubmesh.IndexCount > 0u)
+			drawModelShadow(*mFenceGeo, {mFenceSubmesh}, XMLoadFloat4x4(&mFenceWorld), cascade);
 	}
 
 	mShadowDrawSlotsUsed = shadowCbSlot;
@@ -280,6 +295,8 @@ void ObjTexturesDemoApp::RunDeferredGeometryPass()
 			{
 				per.VertexAnimEnable = 0.f;
 			}
+			per.AlphaTestEnable = sm.AlphaTest ? 1.f : 0.f;
+			per.AlphaTestCutoff = sm.AlphaTestCutoff;
 
 			mObjectCB->CopyData(static_cast<int>(cbSlot), per);
 			const UINT64 cbGpu = mObjectCB->Resource()->GetGPUVirtualAddress() +
@@ -311,6 +328,16 @@ void ObjTexturesDemoApp::RunDeferredGeometryPass()
 			*mPropGeo,
 			mPropSubmeshes,
 			XMLoadFloat4x4(&mPropWorld),
+			D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+	}
+
+	if (mFenceGeo && mFenceSubmesh.IndexCount > 0u)
+	{
+		cmd->SetPipelineState(mDeferredGeoSolidNoCullPSO.Get());
+		drawSubmeshes(
+			*mFenceGeo,
+			{mFenceSubmesh},
+			XMLoadFloat4x4(&mFenceWorld),
 			D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 	}
 

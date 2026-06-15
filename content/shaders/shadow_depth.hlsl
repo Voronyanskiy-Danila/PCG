@@ -10,13 +10,25 @@ cbuffer ShadowDrawCB : register(b0)
 	float gVertexAnimTime;
 	float gVertexAnimAmp;
 	float gVertexAnimSpeed;
+	// Lab 6 доп: alpha test по diffuse (тени в форме текстуры)
+	float gAlphaTestEnable;
+	float gAlphaTestCutoff;
 };
+
+Texture2D gDiffuseMap : register(t0);
+SamplerState gSamLinearWrap : register(s0);
 
 struct VSInput
 {
 	float3 PosL    : POSITION;
 	float3 NormalL : NORMAL;
 	float2 Tex     : TEXCOORD0;
+};
+
+struct VSOutput
+{
+	float4 PosH : SV_POSITION;
+	float2 Tex  : TEXCOORD0;
 };
 
 float3 ApplyVaseVertexAnimShadow(float3 posL)
@@ -35,12 +47,21 @@ float3 ApplyVaseVertexAnimShadow(float3 posL)
 	return animated;
 }
 
-float4 VS_Shadow(VSInput vin) : SV_POSITION
+VSOutput VS_Shadow(VSInput vin)
 {
+	VSOutput o;
 	const float3 posL = ApplyVaseVertexAnimShadow(vin.PosL);
-	return mul(float4(posL, 1.0f), gWorldLightViewProj);
+	o.PosH = mul(float4(posL, 1.0f), gWorldLightViewProj);
+	o.Tex = vin.Tex;
+	return o;
 }
 
-void PS_Shadow()
+void PS_Shadow(VSOutput pin)
 {
+	if (gAlphaTestEnable > 0.5f)
+	{
+		const float4 tex = gDiffuseMap.Sample(gSamLinearWrap, pin.Tex);
+		const float mask = max(tex.a, tex.r);
+		clip(mask - gAlphaTestCutoff);
+	}
 }

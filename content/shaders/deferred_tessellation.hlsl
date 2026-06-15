@@ -76,7 +76,9 @@ cbuffer ObjectCB : register(b0)
 	// Lab 3 доп: procedural displacement (Perlin) вместо height map
 	float    gPerlinSeed;         // сид — меняется F6 на CPU
 	float    gPerlinFrequency;    // масштаб шума в локальных координатах
-	float2   _padLab3;
+	// Lab 6 доп: alpha test (забор, cutout)
+	float    gAlphaTestEnable;
+	float    gAlphaTestCutoff;
 };
 
 static const float kDbgTessHeatmap = 1.f;  // режим визуализации LOD
@@ -436,7 +438,10 @@ GBufferPack PS(DSOutput pin)
 	}
 	else
 	{
-		float3 texRgb = SrgbToLinear(gDiffuseMap.Sample(gSamLinearWrap, pin.Tex).rgb);
+		float4 texSample = gDiffuseMap.Sample(gSamLinearWrap, pin.Tex);
+		float3 texRgb = SrgbToLinear(texSample.rgb);
+		if (gAlphaTestEnable > 0.5f)
+			clip(texSample.a - gAlphaTestCutoff);
 		alb = gMatKd * lerp(float3(1, 1, 1), texRgb, gHasDiffuseTexture);
 	}
 

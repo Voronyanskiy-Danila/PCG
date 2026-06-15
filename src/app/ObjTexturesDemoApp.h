@@ -17,6 +17,9 @@
 // Lab 5 доп:
 //   Круглые партиклы — 2D SDF круга в PS (particles.hlsl), альфа-блендинг
 //
+// Lab 6 доп:
+//   Тени с alpha test — cutout diffuse в shadow_depth.hlsl (забор во дворе)
+//
 // Lab 3:
 //   1) Rock 07 + normal/displacement maps
 //   2) Tessellation + displacement (deferred_tessellation.hlsl)
@@ -108,7 +111,9 @@ struct ObjectConstants
 	// Lab 3 доп — Perlin displacement (deferred_tessellation.hlsl DomainDS)
 	float PerlinSeed = 0.0f;
 	float PerlinFrequency = 6.0f;
-	XMFLOAT2 _padLab3 = {0.0f, 0.0f};
+	// Lab 6 доп — alpha test (забор с cutout-текстурой)
+	float AlphaTestEnable = 0.0f;
+	float AlphaTestCutoff = 0.5f;
 };
 
 // Один draw call: диапазон индексов + материал (4 SRV подряд в heap)
@@ -133,6 +138,9 @@ struct DrawSubmesh
 	float VertexAnimPivotY = 0.0f;
 	float VertexAnimPivotZ = 0.0f;
 	float VertexAnimPhase = 0.0f;
+	// Lab 6 доп — alpha test в shadow / G-buffer
+	bool AlphaTest = false;
+	float AlphaTestCutoff = 0.5f;
 };
 
 struct SceneInstance
@@ -178,6 +186,13 @@ private:
 	void LoadModelAndTextures();
 	void EnsureCerberusAssets();
 	void EnsureRockAssets();
+	void BuildAlphaFenceScene(
+		UINT fenceSrvBase,
+		const Aabb& sponzaLocalBounds,
+		float sponzaExtent,
+		float courtyardFloorTopY);
+	void LoadFenceAlphaTexture(UINT srvBase);
+	std::unique_ptr<MeshGeometry> BuildFenceQuadGeometry();
 	std::unique_ptr<MeshGeometry> BuildModelGeometry(const ObjMeshData& data, const char* name);
 	void CreateSrvForTexture(int heapIndex, ID3D12Resource* tex);
 	void LoadTextureToSrvSlot(UINT heapIndex, const wchar_t* path);
@@ -221,6 +236,7 @@ private:
 	std::unique_ptr<MeshGeometry> mRockGeo = nullptr;
 	std::unique_ptr<MeshGeometry> mSceneGeo = nullptr;
 	std::unique_ptr<MeshGeometry> mPropGeo = nullptr;
+	std::unique_ptr<MeshGeometry> mFenceGeo = nullptr;
 	std::vector<SceneInstance> mInstances;
 	Aabb mMeshLocalBounds{};
 	Aabb mSponzaWorldBounds{};
@@ -240,6 +256,7 @@ private:
 	bool mShadowDrawOverflow = false;
 	bool mGeometryDrawOverflow = false;
 	bool mShadowDrawSponza = true;
+	bool mShadowDrawFence = true;
 
 	bool mFrustumCullingEnabled = true;
 	bool mOctreeFrustumEnabled = false;
@@ -253,6 +270,9 @@ private:
 	std::vector<DrawSubmesh> mRockSubmeshes;
 	std::vector<DrawSubmesh> mSceneSubmeshes;
 	std::vector<DrawSubmesh> mPropSubmeshes;
+	DrawSubmesh mFenceSubmesh{};
+	XMFLOAT4X4 mFenceWorld = MathUtils::Identity4x4();
+	Aabb mFenceWorldBounds{};
 	XMFLOAT4X4 mPropWorld = MathUtils::Identity4x4();
 	Aabb mPropWorldBounds{};
 

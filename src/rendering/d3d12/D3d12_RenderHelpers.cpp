@@ -92,7 +92,79 @@ ComPtr<ID3DBlob> Dx12Utils::CompileShader(
 
 	ThrowIfFailed(hr);
 
-	return byteCode;
+    return byteCode;
+}
+
+Microsoft::WRL::ComPtr<ID3D12Resource> Dx12Utils::CreateTexture2DFromRgba(
+	ID3D12Device* device,
+	ID3D12GraphicsCommandList* cmdList,
+	const void* rgba,
+	UINT width,
+	UINT height,
+	Microsoft::WRL::ComPtr<ID3D12Resource>& uploadBuffer)
+{
+	using Microsoft::WRL::ComPtr;
+
+	ComPtr<ID3D12Resource> texture;
+	const UINT64 uploadRowPitch = (static_cast<UINT64>(width) * 4u + 255u) & ~255u;
+	const UINT64 uploadSize = uploadRowPitch * static_cast<UINT64>(height);
+
+	CD3DX12_HEAP_PROPERTIES defaultHeap(D3D12_HEAP_TYPE_DEFAULT);
+	CD3DX12_RESOURCE_DESC texDesc = CD3DX12_RESOURCE_DESC::Tex2D(
+		DXGI_FORMAT_R8G8B8A8_UNORM,
+		width,
+		height,
+		1u,
+		1u);
+	ThrowIfFailed(device->CreateCommittedResource(
+		&defaultHeap,
+		D3D12_HEAP_FLAG_NONE,
+		&texDesc,
+		D3D12_RESOURCE_STATE_COPY_DEST,
+		nullptr,
+		IID_PPV_ARGS(texture.GetAddressOf())));
+
+	CD3DX12_HEAP_PROPERTIES uploadHeap(D3D12_HEAP_TYPE_UPLOAD);
+	CD3DX12_RESOURCE_DESC uploadDesc = CD3DX12_RESOURCE_DESC::Buffer(uploadSize);
+	ThrowIfFailed(device->CreateCommittedResource(
+		&uploadHeap,
+		D3D12_HEAP_FLAG_NONE,
+		&uploadDesc,
+		D3D12_RESOURCE_STATE_GENERIC_READ,
+		nullptr,
+		IID_PPV_ARGS(uploadBuffer.GetAddressOf())));
+
+	uint8_t* mapped = nullptr;
+	ThrowIfFailed(uploadBuffer->Map(0, nullptr, reinterpret_cast<void**>(&mapped)));
+	const auto* src = static_cast<const uint8_t*>(rgba);
+	for (UINT y = 0u; y < height; ++y)
+	{
+		memcpy(
+			mapped + uploadRowPitch * y,
+			src + static_cast<size_t>(width) * 4u * y,
+			static_cast<size_t>(width) * 4u);
+	}
+	uploadBuffer->Unmap(0, nullptr);
+
+	CD3DX12_TEXTURE_COPY_LOCATION dstLoc{};
+	dstLoc.pResource = texture.Get();
+	dstLoc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+	dstLoc.SubresourceIndex = 0u;
+
+	CD3DX12_TEXTURE_COPY_LOCATION srcLoc{};
+	srcLoc.pResource = uploadBuffer.Get();
+	srcLoc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+	device->GetCopyableFootprints(&texDesc, 0u, 1u, 0u, &srcLoc.PlacedFootprint, nullptr, nullptr, nullptr);
+
+	cmdList->CopyTextureRegion(&dstLoc, 0, 0, 0, &srcLoc, nullptr);
+
+	const auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(
+		texture.Get(),
+		D3D12_RESOURCE_STATE_COPY_DEST,
+		D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+	cmdList->ResourceBarrier(1u, &barrier);
+
+	return texture;
 }
 
 void Dx12Utils::CreateTextureSrv(

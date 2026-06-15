@@ -85,7 +85,7 @@ public:
 	void BeginShadowPass(ID3D12GraphicsCommandList* cmd, UINT cascadeIndex);
 	void EndShadowPass(ID3D12GraphicsCommandList* cmd);
 
-	void SetShadowPipeline(ID3D12GraphicsCommandList* cmd);
+	void SetShadowPipeline(ID3D12GraphicsCommandList* cmd, bool alphaTestCutout = false);
 	Microsoft::WRL::ComPtr<ID3D12RootSignature> ShadowRootSignature() const { return m_rsShadow; }
 	GpuUploadBuffer<ShadowDrawConstants>& ShadowDrawCb() { return *m_shadowDrawCb; }
 	UINT ShadowDrawCbElementSize() const { return m_shadowDrawCbElementSize; }
@@ -169,6 +169,7 @@ private:
 	Microsoft::WRL::ComPtr<ID3DBlob> m_shadowVsBc;
 	Microsoft::WRL::ComPtr<ID3D12RootSignature> m_rsShadow;
 	Microsoft::WRL::ComPtr<ID3D12PipelineState> m_psoShadow;
+	Microsoft::WRL::ComPtr<ID3D12PipelineState> m_psoShadowNoCull;
 
 	Microsoft::WRL::ComPtr<ID3D12Resource> m_lightGpuBuffer;
 	void* m_lightMapped = nullptr;

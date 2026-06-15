@@ -48,6 +48,14 @@ public:
 		ID3D12Resource* tex,
 		D3D12_CPU_DESCRIPTOR_HANDLE dst,
 		bool isCubemap = false);
+
+	static Microsoft::WRL::ComPtr<ID3D12Resource> CreateTexture2DFromRgba(
+		ID3D12Device* device,
+		ID3D12GraphicsCommandList* cmdList,
+		const void* rgba,
+		UINT width,
+		UINT height,
+		Microsoft::WRL::ComPtr<ID3D12Resource>& uploadBuffer);
 };
 
 class DxException

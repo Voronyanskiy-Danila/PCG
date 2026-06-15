@@ -527,11 +527,27 @@ void RenderingSystem::BuildShadowPipeline(ID3D12Device* device)
 	ComPtr<ID3DBlob> shadowPsBc = Dx12Utils::CompileShader(
 		L"content/shaders/shadow_depth.hlsl", nullptr, "PS_Shadow", "ps_5_0");
 
-	CD3DX12_ROOT_PARAMETER rp{};
-	rp.InitAsConstantBufferView(0, 0, D3D12_SHADER_VISIBILITY_VERTEX);
+	CD3DX12_DESCRIPTOR_RANGE srvRange{};
+	srvRange.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1u, 0u);
+
+	CD3DX12_ROOT_PARAMETER rp[2]{};
+	rp[0].InitAsConstantBufferView(0, 0, D3D12_SHADER_VISIBILITY_ALL);
+	rp[1].InitAsDescriptorTable(1, &srvRange, D3D12_SHADER_VISIBILITY_PIXEL);
+
+	CD3DX12_STATIC_SAMPLER_DESC samplerDesc(
+		0,
+		D3D12_FILTER_MIN_MAG_MIP_LINEAR,
+		D3D12_TEXTURE_ADDRESS_MODE_WRAP,
+		D3D12_TEXTURE_ADDRESS_MODE_WRAP,
+		D3D12_TEXTURE_ADDRESS_MODE_WRAP);
 
 	CD3DX12_ROOT_SIGNATURE_DESC rsd{};
-	rsd.Init(1, &rp, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
+	rsd.Init(
+		static_cast<UINT>(_countof(rp)),
+		rp,
+		1,
+		&samplerDesc,
+		D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
 
 	ComPtr<ID3DBlob> serialized;
 	ComPtr<ID3DBlob> errors;
@@ -576,6 +592,10 @@ void RenderingSystem::BuildShadowPipeline(ID3D12Device* device)
 	pso.DSVFormat = DXGI_FORMAT_D32_FLOAT;
 	pso.SampleDesc.Count = 1u;
 	ThrowIfFailed(device->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&m_psoShadow)));
+
+	rs.CullMode = D3D12_CULL_MODE_NONE;
+	pso.RasterizerState = rs;
+	ThrowIfFailed(device->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&m_psoShadowNoCull)));
 }
 
 void RenderingSystem::InitializeShadows(ID3D12Device* device)
@@ -671,11 +691,11 @@ void RenderingSystem::EndShadowPass(ID3D12GraphicsCommandList* cmd)
 	m_shadows.SetShaderReadable(true);
 }
 
-void RenderingSystem::SetShadowPipeline(ID3D12GraphicsCommandList* cmd)
+void RenderingSystem::SetShadowPipeline(ID3D12GraphicsCommandList* cmd, bool alphaTestCutout)
 {
 	if (!cmd)
 		return;
-	cmd->SetPipelineState(m_psoShadow.Get());
+	cmd->SetPipelineState((alphaTestCutout ? m_psoShadowNoCull : m_psoShadow).Get());
 	cmd->SetGraphicsRootSignature(m_rsShadow.Get());
 }
 

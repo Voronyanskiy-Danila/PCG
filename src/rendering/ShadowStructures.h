@@ -25,6 +25,9 @@ struct ShadowDrawConstants
 	float VertexAnimTime = 0.0f;
 	float VertexAnimAmp = 0.18f;
 	float VertexAnimSpeed = 2.0f;
+	// Lab 6 доп — alpha test в shadow / G-buffer (забор и т.п.)
+	float AlphaTestEnable = 0.0f;
+	float AlphaTestCutoff = 0.5f;
 };
 
 struct ShadowLightingConstants

@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <vector>
 
 namespace
 {
@@ -332,6 +333,7 @@ void ObjTexturesDemoApp::CullInstancesLinear()
 void ObjTexturesDemoApp::UpdateShadowCasters()
 {
 	mShadowDrawSponza = true;
+	mShadowDrawFence = true;
 
 	if (!mFrustumCullingEnabled)
 		return;
@@ -347,6 +349,8 @@ void ObjTexturesDemoApp::UpdateShadowCasters()
 		mShadowSceneBounds.IsValid() ? mShadowSceneBounds : mSponzaWorldBounds;
 	mShadowDrawSponza = mSponzaWorldBounds.IsValid() &&
 		mFrustum.IntersectsAabb(shadowBounds, viewProjExpanded);
+	mShadowDrawFence = mFenceWorldBounds.IsValid() &&
+		mFrustum.IntersectsAabb(mFenceWorldBounds, viewProjExpanded);
 }
 
 UINT ObjTexturesDemoApp::CountShadowDrawCalls() const
@@ -357,7 +361,9 @@ UINT ObjTexturesDemoApp::CountShadowDrawCalls() const
 			: 0u;
 	const UINT propDraws =
 		(mPropGeo && !mPropSubmeshes.empty()) ? static_cast<UINT>(mPropSubmeshes.size()) : 0u;
-	return (sceneDraws + propDraws) * kShadowCascadeCount;
+	const UINT fenceDraws =
+		(mShadowDrawFence && mFenceGeo && mFenceSubmesh.IndexCount > 0u) ? 1u : 0u;
+	return (sceneDraws + propDraws + fenceDraws) * kShadowCascadeCount;
 }
 
 void ObjTexturesDemoApp::UpdateCameraAttachedSpotLight()
@@ -629,6 +635,121 @@ std::unique_ptr<MeshGeometry> ObjTexturesDemoApp::BuildModelGeometry(const ObjMe
 	geo->BaseVertexLocation = 0;
 
 	return geo;
+}
+
+namespace
+{
+std::vector<uint8_t> GenerateFenceAlphaRgba(UINT width, UINT height)
+{
+	std::vector<uint8_t> pixels(static_cast<size_t>(width) * height * 4u);
+	for (UINT y = 0u; y < height; ++y)
+	{
+		for (UINT x = 0u; x < width; ++x)
+		{
+			const float u = static_cast<float>(x) / static_cast<float>(width - 1u);
+			const float v = static_cast<float>(y) / static_cast<float>(height - 1u);
+			constexpr int pickets = 12;
+			const float fu = u * static_cast<float>(pickets);
+			const float cell = fu - floorf(fu);
+			const bool post = cell < 0.13f;
+			const bool gap = cell > 0.58f;
+			const bool topRail = v > 0.80f && v < 0.92f;
+			const bool midRail = v > 0.46f && v < 0.56f;
+			const bool botRail = v > 0.06f && v < 0.16f;
+			const bool fill = !gap && v > 0.10f && v < 0.86f;
+			const bool solid = post || topRail || midRail || botRail || fill;
+			const uint8_t rgb = solid ? 205u : 0u;
+			const uint8_t a = solid ? 255u : 0u;
+			const size_t i = (static_cast<size_t>(y) * width + x) * 4u;
+			pixels[i + 0] = rgb;
+			pixels[i + 1] = static_cast<uint8_t>(rgb * 0.92f);
+			pixels[i + 2] = static_cast<uint8_t>(rgb * 0.78f);
+			pixels[i + 3] = a;
+		}
+	}
+	return pixels;
+}
+} // namespace
+
+void ObjTexturesDemoApp::LoadFenceAlphaTexture(UINT srvBase)
+{
+	constexpr UINT kTexSize = 256u;
+	const std::vector<uint8_t> pixels = GenerateFenceAlphaRgba(kTexSize, kTexSize);
+	mTextureGPU[srvBase] = Dx12Utils::CreateTexture2DFromRgba(
+		md3dDevice.Get(),
+		mCommandList.Get(),
+		pixels.data(),
+		kTexSize,
+		kTexSize,
+		mTextureUploads[srvBase]);
+	CreateSrvForTexture(static_cast<int>(srvBase), mTextureGPU[srvBase].Get());
+	LoadTextureToSrvSlot(srvBase + 1u, L"content/models/white.dds");
+	LoadTextureToSrvSlot(srvBase + 2u, L"content/models/white.dds");
+	LoadTextureToSrvSlot(srvBase + 3u, L"content/models/white.dds");
+}
+
+std::unique_ptr<MeshGeometry> ObjTexturesDemoApp::BuildFenceQuadGeometry()
+{
+	ObjMeshData data{};
+	data.Positions = {
+		{-0.5f, -0.5f, 0.0f},
+		{0.5f, -0.5f, 0.0f},
+		{0.5f, 0.5f, 0.0f},
+		{-0.5f, 0.5f, 0.0f},
+	};
+	data.Normals = {
+		{0.0f, 0.0f, 1.0f},
+		{0.0f, 0.0f, 1.0f},
+		{0.0f, 0.0f, 1.0f},
+		{0.0f, 0.0f, 1.0f},
+	};
+	data.Texcoords = {
+		{0.0f, 1.0f},
+		{1.0f, 1.0f},
+		{1.0f, 0.0f},
+		{0.0f, 0.0f},
+	};
+	data.Indices32 = {0u, 1u, 2u, 0u, 2u, 3u};
+	return BuildModelGeometry(data, "FenceQuad");
+}
+
+void ObjTexturesDemoApp::BuildAlphaFenceScene(
+	UINT fenceSrvBase,
+	const Aabb& sponzaLocalBounds,
+	float sponzaExtent,
+	float courtyardFloorTopY)
+{
+	LoadFenceAlphaTexture(fenceSrvBase);
+	mFenceGeo = BuildFenceQuadGeometry();
+
+	mFenceSubmesh = {};
+	mFenceSubmesh.StartIndexLocation = 0u;
+	mFenceSubmesh.IndexCount = mFenceGeo ? mFenceGeo->IndexCount : 0u;
+	mFenceSubmesh.MaterialSrvBase = static_cast<int>(fenceSrvBase);
+	mFenceSubmesh.HasDiffuseTexture = true;
+	mFenceSubmesh.AlphaTest = true;
+	mFenceSubmesh.AlphaTestCutoff = 0.45f;
+	mFenceSubmesh.Kd = {0.55f, 0.42f, 0.28f};
+	mFenceSubmesh.Roughness = 0.85f;
+	mFenceSubmesh.Metallic = 0.0f;
+	mFenceSubmesh.NsFallback = 24.0f;
+
+	const float fenceW = (std::max)(sponzaExtent * 0.20f, 100.0f);
+	const float fenceH = (std::max)(sponzaExtent * 0.13f, 70.0f);
+	// Выше пола двора — на уровне галереи, в зоне прямого солнца (не в тени стен).
+	const float galleryY = ComputeSponzaSecondFloorY(sponzaLocalBounds);
+	const float fenceBaseY = (std::max)(courtyardFloorTopY + sponzaExtent * 0.18f, galleryY - fenceH * 0.70f);
+	// Нормаль к -Z: свет (сверху/со стороны двора) попадает на лицевую сторону, тень уходит на стену +Z.
+	const XMMATRIX fenceWorld = XMMatrixScaling(fenceW, fenceH, 1.0f) * XMMatrixRotationY(XM_PI) *
+		XMMatrixTranslation(
+			mCourtyardAnchor.x,
+			fenceBaseY + fenceH * 0.5f,
+			mCourtyardAnchor.z + sponzaExtent * 0.038f);
+	XMStoreFloat4x4(&mFenceWorld, fenceWorld);
+
+	const Aabb localFence{{-0.5f, -0.5f, -0.01f}, {0.5f, 0.5f, 0.01f}};
+	mFenceWorldBounds = TransformAabb(localFence, fenceWorld);
+	mSceneWorldBounds.Merge(mFenceWorldBounds);
 }
 
 // PSO с hull/domain — заменяет Lab2 deferred_gbuffer.hlsl (простой VS+PS)

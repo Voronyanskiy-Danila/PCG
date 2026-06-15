@@ -341,7 +341,8 @@ void ObjTexturesDemoApp::LoadModelAndTextures()
 	ApplyPipelineHints(cerberusData);
 
 	const UINT materialSlots = static_cast<UINT>(
-		(rockData.Materials.size() + sponzaData.Materials.size() + cerberusData.Materials.size()) * 4u);
+		(rockData.Materials.size() + sponzaData.Materials.size() + cerberusData.Materials.size() + 1u) *
+		4u);
 	// После материалов в heap идут SRV G-buffer + structured buffer огней (RenderingSystem)
 	mDeferredSrvHeapBase = 1u + materialSlots;
 	const UINT srvCount = mDeferredSrvHeapBase + mRenderer.DeferredSrvDescriptorsNeeded();
@@ -453,6 +454,10 @@ void ObjTexturesDemoApp::LoadModelAndTextures()
 		courtyardHalfX,
 		courtyardHalfZ,
 		courtyardFloorTopY + 24.0f);
+
+	const UINT fenceSrvBase = nextSlot;
+	BuildAlphaFenceScene(fenceSrvBase, sponzaLocalBounds, sponzaExtent, courtyardFloorTopY);
+	mShadowSceneBounds.Merge(mFenceWorldBounds);
 
 	FitCameraToScene();
 }
