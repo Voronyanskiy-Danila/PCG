@@ -210,6 +210,8 @@ void ObjTexturesDemoApp::Update(const FrameTimer& gt)
 	obj.DebugMode = static_cast<float>(mTessDebugMode);
 	// DispScale, MinTess, MaxTess, TessNear, TessFar — defaults из struct в .h
 	mSharedConstants = obj;
+	mVertexAnimTime = gt.TotalTime();
+	mSharedConstants.VertexAnimTime = mVertexAnimTime;
 
 	mDisplayFps = (dt > 1e-6f) ? (1.0f / dt) : 0.0f;
 
@@ -635,6 +637,7 @@ void ObjTexturesDemoApp::UpdateWindowCaption()
 	wchar_t cap[160];
 	const wchar_t* vig = mRenderer.PostVignetteEnabled() ? L"on" : L"off";
 	const wchar_t* chr = mRenderer.PostChromaticEnabled() ? L"on" : L"off";
+	const wchar_t* vaseAnim = mVaseVertexAnimEnabled ? L"on" : L"off";
 
 	if (mShadowDrawOverflow || mGeometryDrawOverflow)
 	{
@@ -642,11 +645,12 @@ void ObjTexturesDemoApp::UpdateWindowCaption()
 		swprintf_s(
 			cap,
 			160,
-			L"Lab 8 | %.0f FPS | vis %u/%u | %s | vig %s chr %s",
+			L"Lab 8 | %.0f FPS | vis %u/%u | %s | vase %s vig %s chr %s",
 			mDisplayFps,
 			mVisibleCount,
 			mInstanceCount,
 			cbTag,
+			vaseAnim,
 			vig,
 			chr);
 	}
@@ -655,12 +659,13 @@ void ObjTexturesDemoApp::UpdateWindowCaption()
 		swprintf_s(
 			cap,
 			160,
-			L"Lab 8 | %.0f FPS | vis %u/%u | shd %u/%u | vig %s chr %s",
+			L"Lab 8 | %.0f FPS | vis %u/%u | shd %u/%u | vase %s vig %s chr %s",
 			mDisplayFps,
 			mVisibleCount,
 			mInstanceCount,
 			mShadowDrawSlotsUsed,
 			mShadowDrawCallsNeeded,
+			vaseAnim,
 			vig,
 			chr);
 	}
@@ -726,6 +731,12 @@ LRESULT ObjTexturesDemoApp::MsgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
 			if (wParam == VK_F4)
 			{
 				mRenderer.SetPostChromaticEnabled(!mRenderer.PostChromaticEnabled());
+				UpdateWindowCaption();
+				return 0;
+			}
+			if (wParam == VK_F3)
+			{
+				mVaseVertexAnimEnabled = !mVaseVertexAnimEnabled;
 				UpdateWindowCaption();
 				return 0;
 			}

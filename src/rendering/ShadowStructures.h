@@ -16,6 +16,15 @@ struct ShadowDrawConstants
 		0.0f, 1.0f, 0.0f, 0.0f,
 		0.0f, 0.0f, 1.0f, 0.0f,
 		0.0f, 0.0f, 0.0f, 1.0f};
+	// Lab 1 — vertex squash/stretch (must match shadow_depth.hlsl ShadowDrawCB)
+	float VertexAnimEnable = 0.0f;
+	float VertexAnimPivotX = 0.0f;
+	float VertexAnimPivotY = 0.0f;
+	float VertexAnimPivotZ = 0.0f;
+	float VertexAnimPhase = 0.0f;
+	float VertexAnimTime = 0.0f;
+	float VertexAnimAmp = 0.18f;
+	float VertexAnimSpeed = 2.0f;
 };
 
 struct ShadowLightingConstants

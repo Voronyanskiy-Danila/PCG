@@ -76,6 +76,29 @@ namespace
 			ApplyMaterialPipelineHints(kv.second);
 	}
 
+	// Lab 1: материалы ваз и растений на Sponza
+	bool IsVaseFlowerMaterial(const std::string& materialName)
+	{
+		return materialName == "vase" || materialName == "vase_hanging" || materialName == "vase_round" ||
+			materialName == "leaf" || materialName == "Material__57";
+	}
+
+	void ApplyVaseVertexAnimHint(const ObjMeshData& data, const ObjSubmeshRange& sm, DrawSubmesh& d, float phaseSeed)
+	{
+		if (!IsVaseFlowerMaterial(sm.MaterialName))
+			return;
+
+		const Aabb bounds = ComputeSubmeshLocalBounds(data, sm);
+		if (!bounds.IsValid())
+			return;
+
+		d.VertexAnimEnabled = true;
+		d.VertexAnimPivotX = 0.5f * (bounds.Min.x + bounds.Max.x);
+		d.VertexAnimPivotY = bounds.Min.y;
+		d.VertexAnimPivotZ = 0.5f * (bounds.Min.z + bounds.Max.z);
+		d.VertexAnimPhase = phaseSeed;
+	}
+
 	// Связывает submesh из OBJ с индексом SRV и флагами текстур для ObjectConstants
 	std::vector<DrawSubmesh> BuildDrawSubmeshes(
 		const ObjMeshData& data,
@@ -88,6 +111,7 @@ namespace
 			DrawSubmesh d{};
 			d.StartIndexLocation = sm.StartIndexLocation;
 			d.IndexCount = sm.IndexCount;
+			ApplyVaseVertexAnimHint(data, sm, d, static_cast<float>(out.size()) * 0.41f);
 			auto itMat = data.Materials.find(sm.MaterialName);
 			if (itMat == data.Materials.end())
 			{

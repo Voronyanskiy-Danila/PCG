@@ -1,6 +1,9 @@
 ﻿// =============================================================================
-// ObjTexturesDemoApp.h — Lab 3 (tess) + Lab 5 (particles) + Lab 7 (post) + Lab 8 (PBR)
+// ObjTexturesDemoApp.h — Lab 1 (vase anim) + Lab 3 (tess) + Lab 5/7/8
 // =============================================================================
+//
+// Lab 1:
+//   Вертексная анимация squash/stretch ваз и цветов на Sponza (VS_GBuffer + shadow VS)
 //
 // Lab 3:
 //   1) Rock 07 + normal/displacement maps
@@ -75,6 +78,16 @@ struct ObjectConstants
 	float HasNormalTexture = 0.0f;
 	float DebugMode = 0.0f;    // 0..3, см. клавишу T
 	float NormalFlipY = 0.0f;  // OpenGL normal maps (Sponza *_ddn*)
+
+	// Lab 1 — squash/stretch ваз (cbuffer ObjectCB в deferred_tessellation.hlsl)
+	float VertexAnimEnable = 0.0f;
+	float VertexAnimPivotX = 0.0f;
+	float VertexAnimPivotY = 0.0f;
+	float VertexAnimPivotZ = 0.0f;
+	float VertexAnimPhase = 0.0f;
+	float VertexAnimTime = 0.0f;
+	float VertexAnimAmp = 0.18f;
+	float VertexAnimSpeed = 2.0f;
 };
 
 // Один draw call: диапазон индексов + материал (4 SRV подряд в heap)
@@ -93,6 +106,12 @@ struct DrawSubmesh
 	float Roughness = 0.5f;
 	float Metallic = 0.0f;
 	float NsFallback = 32.0f;
+	// Lab 1: вазы / цветы на Sponza
+	bool VertexAnimEnabled = false;
+	float VertexAnimPivotX = 0.0f;
+	float VertexAnimPivotY = 0.0f;
+	float VertexAnimPivotZ = 0.0f;
+	float VertexAnimPhase = 0.0f;
 };
 
 struct SceneInstance
@@ -245,6 +264,9 @@ private:
 
 	float mCameraSpeed = 280.0f;
 	float mCameraBoostMultiplier = 2.5f;
+
+	float mVertexAnimTime = 0.0f;
+	bool mVaseVertexAnimEnabled = true;
 	float mMouseSensitivity = 0.0022f;
 	float mDisplayFps = 0.0f;
 

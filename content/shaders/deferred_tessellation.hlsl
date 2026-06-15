@@ -61,6 +61,17 @@ cbuffer ObjectCB : register(b0)
 	float    gHasNormalTexture;   // 1 — perturb normal из gNormalMap
 	float    gDebugMode;          // см. константы ниже
 	float    gNormalFlipY;        // 1 — OpenGL normal map (Sponza ddn)
+
+	// Lab 1: вертексная анимация squash/stretch ваз с цветами на Sponza
+	float    gVertexAnimEnable;   // 1 — применить анимацию к submesh
+	float    gVertexAnimPivotX;   // опора по XZ (центр основания вазы)
+	float    gVertexAnimPivotY;   // опора по Y (дно вазы)
+	float    gVertexAnimPivotZ;
+
+	float    gVertexAnimPhase;    // сдвиг фазы (разные вазы не синхронно)
+	float    gVertexAnimTime;     // глобальное время, сек
+	float    gVertexAnimAmp;      // амплитуда сжатия (0.15 ≈ ±15% по Y)
+	float    gVertexAnimSpeed;    // скорость sin-волны
 };
 
 static const float kDbgTessHeatmap = 1.f;  // режим визуализации LOD
@@ -122,6 +133,23 @@ float4 ResolveTangentL(float3 n, float4 storedT)
 		? TangentFromNormal(n)
 		: normalize(storedT.xyz - dot(storedT.xyz, n) * n);
 	return float4(t, storedT.w);
+}
+
+// Lab 1: сжатие/растяжение по Y от дна вазы + лёгкое «дыхание» по XZ
+float3 ApplyVaseVertexAnim(float3 posL)
+{
+	if (gVertexAnimEnable < 0.5f)
+		return posL;
+
+	const float wave = sin(gVertexAnimTime * gVertexAnimSpeed + gVertexAnimPhase);
+	const float sy = 1.0 + gVertexAnimAmp * wave;
+	const float sxz = rsqrt(max(sy, 0.2));
+
+	float3 animated = posL;
+	animated.y = gVertexAnimPivotY + (animated.y - gVertexAnimPivotY) * sy;
+	animated.x = gVertexAnimPivotX + (animated.x - gVertexAnimPivotX) * sxz;
+	animated.z = gVertexAnimPivotZ + (animated.z - gVertexAnimPivotZ) * sxz;
+	return animated;
 }
 
 // -----------------------------------------------------------------------------
@@ -252,7 +280,7 @@ DSOutput DomainDS(
 // -----------------------------------------------------------------------------
 DSOutput VS_GBuffer(VSInput vin)
 {
-	float3 posL = vin.PosL;
+	float3 posL = ApplyVaseVertexAnim(vin.PosL);
 	float3 nL = normalize(vin.NormalL);
 	float4 tL4 = ResolveTangentL(nL, vin.TangentL);
 	float3 tL = tL4.xyz;

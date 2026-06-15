@@ -161,6 +161,15 @@ void ObjTexturesDemoApp::RunShadowPass()
 			ShadowDrawConstants sd{};
 			const XMMATRIX wvp = world * lightViewProj;
 			XMStoreFloat4x4(&sd.WorldLightViewProj, XMMatrixTranspose(wvp));
+			if (mVaseVertexAnimEnabled && sm.VertexAnimEnabled)
+			{
+				sd.VertexAnimEnable = 1.f;
+				sd.VertexAnimPivotX = sm.VertexAnimPivotX;
+				sd.VertexAnimPivotY = sm.VertexAnimPivotY;
+				sd.VertexAnimPivotZ = sm.VertexAnimPivotZ;
+				sd.VertexAnimPhase = sm.VertexAnimPhase;
+				sd.VertexAnimTime = mVertexAnimTime;
+			}
 
 			mRenderer.ShadowDrawCb().CopyData(static_cast<int>(shadowCbSlot), sd);
 			cmd->SetGraphicsRootConstantBufferView(
@@ -241,6 +250,19 @@ void ObjTexturesDemoApp::RunDeferredGeometryPass()
 			per.HasRmTexture = sm.HasRmTexture ? 1.f : 0.f;
 			per.NormalFlipY = sm.NormalFlipY ? 1.f : 0.f;
 			per.UvScale = sm.UvScale;
+			if (mVaseVertexAnimEnabled && sm.VertexAnimEnabled)
+			{
+				per.VertexAnimEnable = 1.f;
+				per.VertexAnimPivotX = sm.VertexAnimPivotX;
+				per.VertexAnimPivotY = sm.VertexAnimPivotY;
+				per.VertexAnimPivotZ = sm.VertexAnimPivotZ;
+				per.VertexAnimPhase = sm.VertexAnimPhase;
+				per.VertexAnimTime = mVertexAnimTime;
+			}
+			else
+			{
+				per.VertexAnimEnable = 0.f;
+			}
 
 			mObjectCB->CopyData(static_cast<int>(cbSlot), per);
 			const UINT64 cbGpu = mObjectCB->Resource()->GetGPUVirtualAddress() +
