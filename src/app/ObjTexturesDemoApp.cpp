@@ -213,6 +213,8 @@ void ObjTexturesDemoApp::Update(const FrameTimer& gt)
 	mSharedConstants = obj;
 	mVertexAnimTime = gt.TotalTime();
 	mSharedConstants.VertexAnimTime = mVertexAnimTime;
+	mSharedConstants.PerlinSeed = mPerlinSeed;
+	mSharedConstants.PerlinFrequency = 6.0f;
 
 	if (mLightRainEnabled)
 		mLightRain.Update(dt);
@@ -672,11 +674,12 @@ void ObjTexturesDemoApp::UpdateWindowCaption()
 		swprintf_s(
 			cap,
 			160,
-			L"Lab 8 | %.0f FPS | rain %u/%u vase %s | shd %u/%u | vig %s chr %s",
+			L"Lab 8 | %.0f FPS | rain %u/%u vase %s | perl %.0f | shd %u/%u | vig %s chr %s",
 			mDisplayFps,
 			mLightRain.LandedDropCount(),
 			mLightRain.ActiveDropCount(),
 			vaseAnim,
+			mPerlinSeed,
 			mShadowDrawSlotsUsed,
 			mShadowDrawCallsNeeded,
 			vig,
@@ -758,6 +761,12 @@ LRESULT ObjTexturesDemoApp::MsgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
 				mLightRainEnabled = !mLightRainEnabled;
 				mLightRain.SetEnabled(mLightRainEnabled);
 				UploadSceneLights();
+				UpdateWindowCaption();
+				return 0;
+			}
+			if (wParam == VK_F6)
+			{
+				mPerlinSeed += 1.0f;
 				UpdateWindowCaption();
 				return 0;
 			}

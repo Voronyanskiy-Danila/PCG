@@ -11,7 +11,7 @@
 //   HS  — PatchConstantHS: факторы тесселяции (LOD по камере)
 //       — HullHS: передаёт вершины патча без изменений
 //        ↓  [фиксированный tessellator GPU режет рёбра по факторам]
-//   DS  — интерполяция внутри патча + displacement по текстуре
+//   DS  — интерполяция внутри патча + displacement (Lab 3 доп: Perlin noise)
 //        ↓
 //   PS  — albedo, normal map → запись в G-buffer (4 RT)
 //        ↓
@@ -20,7 +20,7 @@
 // Текстуры материала (root signature, таблица SRV):
 //   t0 — diffuse (map_Kd)
 //   t1 — normal map (map_Bump / norm)
-//   t2 — displacement (map_disp)
+//   t2 — displacement map (не используется в DS после Lab 3 доп; SRV остаётся в root)
 //   t3 — ARM: AO / roughness / metallic (map_ARM), Lab 8 PBR
 //
 // DebugMode (клавиша T в приложении):
@@ -72,6 +72,11 @@ cbuffer ObjectCB : register(b0)
 	float    gVertexAnimTime;     // глобальное время, сек
 	float    gVertexAnimAmp;      // амплитуда сжатия (0.15 ≈ ±15% по Y)
 	float    gVertexAnimSpeed;    // скорость sin-волны
+
+	// Lab 3 доп: procedural displacement (Perlin) вместо height map
+	float    gPerlinSeed;         // сид — меняется F6 на CPU
+	float    gPerlinFrequency;    // масштаб шума в локальных координатах
+	float2   _padLab3;
 };
 
 static const float kDbgTessHeatmap = 1.f;  // режим визуализации LOD
@@ -152,6 +157,64 @@ float3 ApplyVaseVertexAnim(float3 posL)
 	return animated;
 }
 
+// --- Lab 3 доп: 3D gradient noise (Perlin-style) для displacement ---
+float3 PerlinHash3(float3 p, float seed)
+{
+	p = frac(p * float3(0.1031, 0.1030, 0.0973) + seed * 0.137);
+	p += dot(p, p.yxz + 33.33);
+	return frac((p.xxy + p.yxx) * p.zyx) * 2.0 - 1.0;
+}
+
+float3 PerlinFade(float3 t)
+{
+	return t * t * t * (t * (t * 6.0 - 15.0) + 10.0);
+}
+
+float PerlinNoise3(float3 p, float seed)
+{
+	float3 i = floor(p);
+	float3 f = frac(p);
+	float3 u = PerlinFade(f);
+
+	float n000 = dot(PerlinHash3(i + float3(0, 0, 0), seed), f - float3(0, 0, 0));
+	float n100 = dot(PerlinHash3(i + float3(1, 0, 0), seed), f - float3(1, 0, 0));
+	float n010 = dot(PerlinHash3(i + float3(0, 1, 0), seed), f - float3(0, 1, 0));
+	float n110 = dot(PerlinHash3(i + float3(1, 1, 0), seed), f - float3(1, 1, 0));
+	float n001 = dot(PerlinHash3(i + float3(0, 0, 1), seed), f - float3(0, 0, 1));
+	float n101 = dot(PerlinHash3(i + float3(1, 0, 1), seed), f - float3(1, 0, 1));
+	float n011 = dot(PerlinHash3(i + float3(0, 1, 1), seed), f - float3(0, 1, 1));
+	float n111 = dot(PerlinHash3(i + float3(1, 1, 1), seed), f - float3(1, 1, 1));
+
+	float nx00 = lerp(n000, n100, u.x);
+	float nx10 = lerp(n010, n110, u.x);
+	float nx01 = lerp(n001, n101, u.x);
+	float nx11 = lerp(n011, n111, u.x);
+	float nxy0 = lerp(nx00, nx10, u.y);
+	float nxy1 = lerp(nx01, nx11, u.y);
+	return lerp(nxy0, nxy1, u.z);
+}
+
+float PerlinFbm3(float3 p, float seed)
+{
+	float value = 0.0;
+	float amplitude = 0.5;
+	float frequency = 1.0;
+	[unroll]
+	for (int octave = 0; octave < 4; ++octave)
+	{
+		value += amplitude * PerlinNoise3(p * frequency, seed + octave * 19.17);
+		frequency *= 2.03;
+		amplitude *= 0.5;
+	}
+	return value;
+}
+
+float SamplePerlinDisplacement(float3 posL)
+{
+	const float3 samplePos = posL * gPerlinFrequency + float3(gPerlinSeed * 1.73, gPerlinSeed * 2.41, gPerlinSeed * 0.97);
+	return PerlinFbm3(samplePos, gPerlinSeed);
+}
+
 // -----------------------------------------------------------------------------
 // VERTEX SHADER (VS)
 // Вызывается 1 раз на каждую вершину исходного меша (контрольные точки патча).
@@ -230,7 +293,7 @@ struct DSOutput
 // bary = барицентрические координаты (u,v,w), u+v+w=1.
 //
 // 1) Линейная интерполяция pos/normal/tangent/UV по контрольным точкам
-// 2) Displacement: высота из gDispMap, сдвиг вдоль nL (Lab 3)
+// 2) Displacement: Lab 3 доп — Perlin FBM вдоль nL (вместо gDispMap)
 // 3) Преобразование в мир и clip
 // -----------------------------------------------------------------------------
 [domain("tri")]
@@ -251,11 +314,11 @@ DSOutput DomainDS(
 	float tangentW = (abs(patch[0].TangentL.w) > 0.5f) ? sign(patch[0].TangentL.w) : 1.f;
 	float2 tex = patch[0].Tex * u + patch[1].Tex * v + patch[2].Tex * w;
 
-	// Шаг 2 domain: ВЫСОТА из displacement-текстуры (map_disp), не из вершины OBJ
-	float h = gDispMap.SampleLevel(gSamLinearWrap, tex, 0).r; // 0..1, 0.5 = «ноль» высоты
-	float dispOff = (h - 0.5f) * gDispScale;            // метры вдоль nL; масштаб с CPU
+	// Шаг 2 domain: высота из 3D Perlin noise (сид gPerlinSeed с CPU, F6)
+	float h = SamplePerlinDisplacement(posL);
+	float dispOff = h * gDispScale;
 	if (abs(gDebugMode - kDbgTessNoDisp) > 0.5f)
-		posL += nL * dispOff;                              // сдвиг вершины = геометрический рельеф
+		posL += nL * dispOff;
 
 	// Средний tess factor патча (для отладочной раскраски в PS)
 	float tessLevel = (hs.Edge[0] + hs.Edge[1] + hs.Edge[2] + hs.Inside) * 0.25f;

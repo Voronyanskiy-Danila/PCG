@@ -8,6 +8,9 @@
 // Lab 2 доп:
 //   Дождь из point lights: падают на пол двора и остаются светиться (deferred lighting)
 //
+// Lab 3 доп:
+//   Displacement камней — 3D Perlin noise; сид меняется клавишей F6
+//
 // Lab 3:
 //   1) Rock 07 + normal/displacement maps
 //   2) Tessellation + displacement (deferred_tessellation.hlsl)
@@ -93,6 +96,11 @@ struct ObjectConstants
 	float VertexAnimTime = 0.0f;
 	float VertexAnimAmp = 0.18f;
 	float VertexAnimSpeed = 2.0f;
+
+	// Lab 3 доп — Perlin displacement (deferred_tessellation.hlsl DomainDS)
+	float PerlinSeed = 0.0f;
+	float PerlinFrequency = 6.0f;
+	XMFLOAT2 _padLab3 = {0.0f, 0.0f};
 };
 
 // Один draw call: диапазон индексов + материал (4 SRV подряд в heap)
@@ -244,6 +252,7 @@ private:
 	ComPtr<ID3D12PipelineState> mDeferredGeoSolidNoCullPSO = nullptr;
 
 	int mTessDebugMode = 0;
+	float mPerlinSeed = 0.0f;
 
 	RenderingSystem mRenderer{};
 	UINT mDeferredSrvHeapBase = 0; // смещение SRV G-buffer в общем heap

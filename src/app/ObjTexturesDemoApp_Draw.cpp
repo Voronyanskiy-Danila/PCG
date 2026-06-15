@@ -323,7 +323,7 @@ void ObjTexturesDemoApp::RunDeferredGeometryPass()
 
 		cmd->SetPipelineState(rockPso);
 		ObjectConstants rockCb = mSharedConstants;
-		rockCb.DispScale = 0.02f;
+		rockCb.DispScale = 0.045f;
 		rockCb.MinTess = 1.0f;
 		rockCb.MaxTess = 5.0f;
 		rockCb.TessNear = 50.0f;
