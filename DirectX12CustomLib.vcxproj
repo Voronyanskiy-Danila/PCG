@@ -96,6 +96,12 @@
     <ClCompile Include="src\app\ObjTexturesDemoApp.cpp">
       <Filter>src\app</Filter>
     </ClCompile>
+    <ClCompile Include="src\app\LightRainSystem.cpp">
+      <Filter>src\app</Filter>
+    </ClCompile>
+    <ClCompile Include="src\app\LightRainCircleRenderer.cpp">
+      <Filter>src\app</Filter>
+    </ClCompile>
     <ClCompile Include="src\app\ObjTexturesDemoApp_Draw.cpp">
       <Filter>src\app</Filter>
     </ClCompile>
@@ -144,6 +150,12 @@
       <Filter>src\app</Filter>
     </ClInclude>
     <ClInclude Include="src\app\ObjTexturesDemoApp.h">
+      <Filter>src\app</Filter>
+    </ClInclude>
+    <ClInclude Include="src\app\LightRainSystem.h">
+      <Filter>src\app</Filter>
+    </ClInclude>
+    <ClInclude Include="src\app\LightRainCircleRenderer.h">
       <Filter>src\app</Filter>
     </ClInclude>
     <ClInclude Include="src\core\FrameTiming.h">

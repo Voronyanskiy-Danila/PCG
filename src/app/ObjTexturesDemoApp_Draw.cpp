@@ -31,6 +31,23 @@ void ObjTexturesDemoApp::Draw(const FrameTimer& gt)
 	const XMVECTOR cameraRight = XMVector3Normalize(invView.r[0]);
 	const XMVECTOR cameraUp = XMVector3Normalize(invView.r[1]);
 	const bool usePostSceneRt = mRenderer.UsesSceneColorTarget();
+
+	if (mLightRainEnabled)
+	{
+		mLightRainCircles.Draw(
+			mCommandList.Get(),
+			mLightRain,
+			colorRtv,
+			mRenderer.GetGBuffer()->DsvCpu(),
+			!usePostSceneRt,
+			mScreenViewport,
+			mScissorRect,
+			view,
+			proj,
+			cameraRight,
+			cameraUp);
+	}
+
 	mRenderer.DrawParticles(
 		mCommandList.Get(),
 		colorRtv,

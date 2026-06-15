@@ -1,9 +1,12 @@
 ﻿// =============================================================================
-// ObjTexturesDemoApp.h — Lab 1 (vase anim) + Lab 3 (tess) + Lab 5/7/8
+// ObjTexturesDemoApp.h — Lab 1 (vase anim) + Lab 2 (light rain) + Lab 3/5/7/8
 // =============================================================================
 //
 // Lab 1:
 //   Вертексная анимация squash/stretch ваз и цветов на Sponza (VS_GBuffer + shadow VS)
+//
+// Lab 2 доп:
+//   Дождь из point lights: падают на пол двора и остаются светиться (deferred lighting)
 //
 // Lab 3:
 //   1) Rock 07 + normal/displacement maps
@@ -22,6 +25,8 @@
 #include "../rendering/RenderingSystem.h"
 #include "../importers/Importer_Wavefront_ObjMtl.h"
 #include "D3d12AppBase.h"
+#include "LightRainSystem.h"
+#include "LightRainCircleRenderer.h"
 
 #include <string>
 #include <unordered_map>
@@ -180,6 +185,7 @@ private:
 
 	XMVECTOR CameraForwardNormalized() const;
 	void UpdateCameraAttachedSpotLight();
+	void UploadSceneLights();
 
 	// Два прохода deferred (Lab 2) + tess в геометрии (Lab 3)
 	void StartDeferredFrameRecording();
@@ -242,6 +248,9 @@ private:
 	RenderingSystem mRenderer{};
 	UINT mDeferredSrvHeapBase = 0; // смещение SRV G-buffer в общем heap
 	std::vector<GpuLight> mSceneLights;
+	LightRainSystem mLightRain{};
+	LightRainCircleRenderer mLightRainCircles{};
+	bool mLightRainEnabled = true;
 
 	XMFLOAT4X4 mView = MathUtils::Identity4x4();
 	XMFLOAT4X4 mProj = MathUtils::Identity4x4();

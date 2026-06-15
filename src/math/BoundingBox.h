@@ -20,7 +20,10 @@ Aabb ComputeMeshLocalBounds(const struct ObjMeshData& mesh);
 Aabb ComputeSubmeshLocalBounds(const struct ObjMeshData& mesh, const struct ObjSubmeshRange& submesh);
 
 // Центр плоского «пола» двора Sponza (для Cerberus / камней), не AABB всей модели.
-bool ComputeSponzaCourtyardAnchor(const struct ObjMeshData& mesh, DirectX::XMFLOAT3& outAnchor);
+bool ComputeSponzaCourtyardAnchor(
+	const struct ObjMeshData& mesh,
+	DirectX::XMFLOAT3& outAnchor,
+	float* outFloorTopY = nullptr);
 
 // Y галереи 2-го этажа Sponza (локальные коорд. OBJ; двор ≈ 35%, 2-й этаж ≈ 46%).
 float ComputeSponzaSecondFloorY(const Aabb& sponzaLocalBounds);

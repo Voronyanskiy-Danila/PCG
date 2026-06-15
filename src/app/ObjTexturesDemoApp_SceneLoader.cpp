@@ -368,13 +368,15 @@ void ObjTexturesDemoApp::LoadModelAndTextures()
 	const Aabb sponzaLocalBounds = ComputeMeshLocalBounds(sponzaData);
 	mSponzaWorldBounds = sponzaLocalBounds;
 	mSceneWorldBounds = sponzaLocalBounds;
-	if (!ComputeSponzaCourtyardAnchor(sponzaData, mCourtyardAnchor))
+	float courtyardFloorTopY = sponzaLocalBounds.Min.y;
+	if (!ComputeSponzaCourtyardAnchor(sponzaData, mCourtyardAnchor, &courtyardFloorTopY))
 	{
 		mCourtyardAnchor = {
 			(sponzaLocalBounds.Min.x + sponzaLocalBounds.Max.x) * 0.5f,
 			sponzaLocalBounds.Min.y,
 			(sponzaLocalBounds.Min.z + sponzaLocalBounds.Max.z) * 0.5f
 		};
+		courtyardFloorTopY = sponzaLocalBounds.Min.y;
 	}
 	mRenderer.SetParticleEmitter(mCourtyardAnchor);
 
@@ -425,6 +427,17 @@ void ObjTexturesDemoApp::LoadModelAndTextures()
 
 	mShadowSceneBounds = mSponzaWorldBounds;
 	mShadowSceneBounds.Merge(mPropWorldBounds);
+
+	const float courtyardHalfX =
+		(sponzaLocalBounds.Max.x - sponzaLocalBounds.Min.x) * 0.20f;
+	const float courtyardHalfZ =
+		(sponzaLocalBounds.Max.z - sponzaLocalBounds.Min.z) * 0.20f;
+	mLightRain.Configure(
+		mCourtyardAnchor,
+		courtyardFloorTopY + 0.05f,
+		courtyardHalfX,
+		courtyardHalfZ,
+		courtyardFloorTopY + 24.0f);
 
 	FitCameraToScene();
 }

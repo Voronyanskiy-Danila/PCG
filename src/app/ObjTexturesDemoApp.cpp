@@ -116,6 +116,7 @@ bool ObjTexturesDemoApp::Initialize()
 	mRenderer.Initialize(md3dDevice.Get(), mBackBufferFormat);
 	mRenderer.LoadIblTextures(md3dDevice.Get(), mCommandList.Get());
 	mRenderer.InitializeParticles(md3dDevice.Get(), 256u);
+	mLightRainCircles.Initialize(md3dDevice.Get(), mBackBufferFormat, 512u);
 	mRenderer.ResizeGBuffer(md3dDevice.Get(), static_cast<UINT>(mClientWidth), static_cast<UINT>(mClientHeight));
 	RefreshDeferredSrvs();
 	BuildDeferredGeometryPipeline();
@@ -213,13 +214,25 @@ void ObjTexturesDemoApp::Update(const FrameTimer& gt)
 	mVertexAnimTime = gt.TotalTime();
 	mSharedConstants.VertexAnimTime = mVertexAnimTime;
 
+	if (mLightRainEnabled)
+		mLightRain.Update(dt);
+
 	mDisplayFps = (dt > 1e-6f) ? (1.0f / dt) : 0.0f;
 
 	UpdateVisibility();
 	UpdateShadowCasters();
 
 	UpdateCameraAttachedSpotLight();
-	mRenderer.SetLights(mSceneLights.data(), static_cast<UINT>(mSceneLights.size()));
+	UploadSceneLights();
+}
+
+void ObjTexturesDemoApp::UploadSceneLights()
+{
+	std::vector<GpuLight> lights;
+	if (mLightRainEnabled)
+		mLightRain.AppendPointLights(lights);
+	lights.insert(lights.end(), mSceneLights.begin(), mSceneLights.end());
+	mRenderer.SetLights(lights.data(), static_cast<UINT>(lights.size()));
 }
 
 void ObjTexturesDemoApp::UpdateVisibility()
@@ -638,6 +651,7 @@ void ObjTexturesDemoApp::UpdateWindowCaption()
 	const wchar_t* vig = mRenderer.PostVignetteEnabled() ? L"on" : L"off";
 	const wchar_t* chr = mRenderer.PostChromaticEnabled() ? L"on" : L"off";
 	const wchar_t* vaseAnim = mVaseVertexAnimEnabled ? L"on" : L"off";
+	const wchar_t* lightRain = mLightRainEnabled ? L"on" : L"off";
 
 	if (mShadowDrawOverflow || mGeometryDrawOverflow)
 	{
@@ -645,12 +659,11 @@ void ObjTexturesDemoApp::UpdateWindowCaption()
 		swprintf_s(
 			cap,
 			160,
-			L"Lab 8 | %.0f FPS | vis %u/%u | %s | vase %s vig %s chr %s",
+			L"Lab 8 | %.0f FPS | rain %s vase %s | %s | vig %s chr %s",
 			mDisplayFps,
-			mVisibleCount,
-			mInstanceCount,
-			cbTag,
+			lightRain,
 			vaseAnim,
+			cbTag,
 			vig,
 			chr);
 	}
@@ -659,13 +672,13 @@ void ObjTexturesDemoApp::UpdateWindowCaption()
 		swprintf_s(
 			cap,
 			160,
-			L"Lab 8 | %.0f FPS | vis %u/%u | shd %u/%u | vase %s vig %s chr %s",
+			L"Lab 8 | %.0f FPS | rain %u/%u vase %s | shd %u/%u | vig %s chr %s",
 			mDisplayFps,
-			mVisibleCount,
-			mInstanceCount,
+			mLightRain.LandedDropCount(),
+			mLightRain.ActiveDropCount(),
+			vaseAnim,
 			mShadowDrawSlotsUsed,
 			mShadowDrawCallsNeeded,
-			vaseAnim,
 			vig,
 			chr);
 	}
@@ -712,7 +725,7 @@ void ObjTexturesDemoApp::SetupSceneLights()
 	mSceneLights.push_back(sp);
 
 	UpdateCameraAttachedSpotLight();
-	mRenderer.SetLights(mSceneLights.data(), static_cast<UINT>(mSceneLights.size()));
+	UploadSceneLights();
 }
 
 LRESULT ObjTexturesDemoApp::MsgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
@@ -737,6 +750,14 @@ LRESULT ObjTexturesDemoApp::MsgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
 			if (wParam == VK_F3)
 			{
 				mVaseVertexAnimEnabled = !mVaseVertexAnimEnabled;
+				UpdateWindowCaption();
+				return 0;
+			}
+			if (wParam == VK_F5)
+			{
+				mLightRainEnabled = !mLightRainEnabled;
+				mLightRain.SetEnabled(mLightRainEnabled);
+				UploadSceneLights();
 				UpdateWindowCaption();
 				return 0;
 			}

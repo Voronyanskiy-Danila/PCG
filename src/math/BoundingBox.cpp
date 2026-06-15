@@ -83,17 +83,56 @@ Aabb ComputeSubmeshLocalBounds(const ObjMeshData& mesh, const ObjSubmeshRange& s
 	return b;
 }
 
-bool ComputeSponzaCourtyardAnchor(const ObjMeshData& mesh, XMFLOAT3& outAnchor)
+bool ComputeSponzaCourtyardAnchor(const ObjMeshData& mesh, XMFLOAT3& outAnchor, float* outFloorTopY)
 {
 	const Aabb full = ComputeMeshLocalBounds(mesh);
 	if (!full.IsValid() || mesh.Submeshes.empty())
 		return false;
 
-	const float spanY = full.Max.y - full.Min.y;
-	const float targetY = full.Min.y + spanY * 0.35f;
+	auto setResult = [&](const Aabb& b) {
+		outAnchor = {
+			(b.Min.x + b.Max.x) * 0.5f,
+			(b.Min.y + b.Max.y) * 0.5f,
+			(b.Min.z + b.Max.z) * 0.5f
+		};
+		if (outFloorTopY)
+			*outFloorTopY = b.Max.y;
+	};
 
-	float bestScore = -1.0f;
-	XMFLOAT3 bestAnchor = {};
+	// Двор Sponza: материал "floor" встречается дважды — берём самый нижний (1-й этаж, не галерея).
+	bool foundFloorMaterial = false;
+	float lowestFloorMinY = std::numeric_limits<float>::max();
+	Aabb groundFloorBounds{};
+
+	for (const ObjSubmeshRange& sm : mesh.Submeshes)
+	{
+		if (sm.MaterialName != "floor")
+			continue;
+
+		const Aabb b = ComputeSubmeshLocalBounds(mesh, sm);
+		if (!b.IsValid())
+			continue;
+
+		if (b.Min.y < lowestFloorMinY)
+		{
+			lowestFloorMinY = b.Min.y;
+			groundFloorBounds = b;
+			foundFloorMaterial = true;
+		}
+	}
+
+	if (foundFloorMaterial)
+	{
+		setResult(groundFloorBounds);
+		return true;
+	}
+
+	// Запасной вариант: самая большая тонкая горизонтальная плита у основания здания.
+	const float spanY = full.Max.y - full.Min.y;
+	const float groundBandTop = full.Min.y + spanY * 0.22f;
+
+	float bestArea = -1.0f;
+	Aabb bestBounds{};
 
 	for (const ObjSubmeshRange& sm : mesh.Submeshes)
 	{
@@ -105,35 +144,35 @@ bool ComputeSponzaCourtyardAnchor(const ObjMeshData& mesh, XMFLOAT3& outAnchor)
 		if (height > 1.0f)
 			continue;
 
+		const float centerY = (b.Min.y + b.Max.y) * 0.5f;
+		if (centerY > groundBandTop)
+			continue;
+
 		const float areaXZ = (b.Max.x - b.Min.x) * (b.Max.z - b.Min.z);
 		if (areaXZ < 100.0f)
 			continue;
 
-		const float centerY = (b.Min.y + b.Max.y) * 0.5f;
-		const float yDistance = fabsf(centerY - targetY);
-		const float score = areaXZ / (1.0f + yDistance);
-		if (score <= bestScore)
+		if (areaXZ <= bestArea)
 			continue;
 
-		bestScore = score;
-		bestAnchor = {
-			(b.Min.x + b.Max.x) * 0.5f,
-			centerY,
-			(b.Min.z + b.Max.z) * 0.5f
-		};
+		bestArea = areaXZ;
+		bestBounds = b;
 	}
 
-	if (bestScore < 0.0f)
+	if (bestArea < 0.0f)
 	{
+		const float fallbackY = full.Min.y + spanY * 0.12f;
 		outAnchor = {
 			(full.Min.x + full.Max.x) * 0.5f,
-			targetY,
+			fallbackY,
 			(full.Min.z + full.Max.z) * 0.5f
 		};
+		if (outFloorTopY)
+			*outFloorTopY = fallbackY;
 		return false;
 	}
 
-	outAnchor = bestAnchor;
+	setResult(bestBounds);
 	return true;
 }
 
