@@ -326,11 +326,11 @@ void ObjTexturesDemoApp::RunDeferredGeometryPass()
 		rockCb.DispScale = 0.045f;
 		rockCb.MinTess = 1.0f;
 		rockCb.MaxTess = 5.0f;
-		rockCb.TessNear = 50.0f;
-		rockCb.TessFar = 320.0f;
+		rockCb.TessNear = mRockTessNear;
+		rockCb.TessFar = mRockTessFar;
 		rockCb.DebugMode = static_cast<float>(mTessDebugMode);
 
-		for (uint32_t visIdx : mVisibleInstances)
+		for (uint32_t visIdx : mMeshInstances)
 		{
 			const SceneInstance& inst = mInstances[visIdx];
 			drawSubmeshes(
@@ -339,6 +339,33 @@ void ObjTexturesDemoApp::RunDeferredGeometryPass()
 				XMLoadFloat4x4(&inst.World),
 				D3D_PRIMITIVE_TOPOLOGY_3_CONTROL_POINT_PATCHLIST,
 				&rockCb);
+		}
+
+		if (mBillboardLodEnabled && !mBillboardInstances.empty())
+		{
+			BillboardMaterialConstants bbMat{};
+			XMMATRIX invView = XMMatrixInverse(nullptr, view);
+			XMStoreFloat4x4(&bbMat.ViewProj, XMMatrixTranspose(view * proj));
+			XMStoreFloat3(&bbMat.CameraRight, XMVector3Normalize(invView.r[0]));
+			XMStoreFloat3(&bbMat.CameraUp, XMVector3Normalize(invView.r[1]));
+			bbMat.EyePosW = mCameraPos;
+			bbMat.MatKd = mRockBillboardMaterial.Kd;
+			bbMat.HasDiffuseTexture = mRockBillboardMaterial.HasDiffuseTexture ? 1.0f : 0.0f;
+			bbMat.MatRoughness = mRockBillboardMaterial.Roughness;
+			bbMat.MatMetallic = mRockBillboardMaterial.Metallic;
+			bbMat.HasRmTexture = mRockBillboardMaterial.HasRmTexture ? 1.0f : 0.0f;
+			bbMat.MatNsFallback = mRockBillboardMaterial.NsFallback;
+
+			mDistantBillboards.DrawGBuffer(
+				cmd,
+				mBillboardInstances,
+				bbMat,
+				mSrvHeap.Get(),
+				mBillboardInstanceSrvIndex,
+				static_cast<UINT>(mRockBillboardSrvBase),
+				mCbvSrvUavDescriptorSize);
+
+			cmd->SetGraphicsRootSignature(mRootSignature.Get());
 		}
 	}
 }
@@ -375,6 +402,8 @@ void ObjTexturesDemoApp::RunDeferredLightingPass()
 		kDirLightIntensity);
 
 	mRenderer.SetLightingPipeline(cmd);
+	ID3D12DescriptorHeap* heaps[] = {mSrvHeap.Get()};
+	cmd->SetDescriptorHeaps(1u, heaps);
 	cmd->SetGraphicsRootConstantBufferView(0u, mRenderer.LightingCb().Resource()->GetGPUVirtualAddress());
 	cmd->SetGraphicsRootConstantBufferView(
 		1u,

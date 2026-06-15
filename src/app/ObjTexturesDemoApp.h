@@ -11,6 +11,9 @@
 // Lab 3 доп:
 //   Displacement камней — 3D Perlin noise; сид меняется клавишей F6
 //
+// Lab 4 доп:
+//   Далёкие инстансы камней — billboards в G-buffer вместо tess mesh (F7)
+//
 // Lab 3:
 //   1) Rock 07 + normal/displacement maps
 //   2) Tessellation + displacement (deferred_tessellation.hlsl)
@@ -30,6 +33,7 @@
 #include "D3d12AppBase.h"
 #include "LightRainSystem.h"
 #include "LightRainCircleRenderer.h"
+#include "DistantBillboardRenderer.h"
 
 #include <string>
 #include <unordered_map>
@@ -45,6 +49,7 @@ inline constexpr float kCameraSpotIntensityMul = 5.0f;
 inline constexpr float kCameraSpotRange = 320.0f;
 inline constexpr float kCameraSpotInnerAngleDeg = 22.0f;
 inline constexpr float kCameraSpotOuterAngleDeg = 42.0f;
+inline constexpr float kBillboardLodDistanceMin = 80.0f;
 
 // Вершина меша: совпадает с VSInput в deferred_tessellation.hlsl
 struct Vertex
@@ -187,6 +192,7 @@ private:
 	void BuildSceneOctree();
 	void FitCameraToScene();
 	void UpdateVisibility();
+	void UpdateInstanceLod();
 	void UpdateShadowCasters();
 	void CullInstancesLinear();
 	UINT CountShadowDrawCalls() const;
@@ -220,8 +226,12 @@ private:
 	Aabb mShadowSceneBounds{};
 	Aabb mSceneWorldBounds{};
 	std::vector<uint32_t> mVisibleInstances;
+	std::vector<uint32_t> mMeshInstances;
+	std::vector<BillboardGpu> mBillboardInstances;
 	UINT mInstanceCount = 0;
 	UINT mVisibleCount = 0;
+	UINT mBillboardCount = 0;
+	UINT mMeshLodCount = 0;
 	UINT mShadowDrawSlotsUsed = 0;
 	UINT mShadowDrawCallsNeeded = 0;
 	bool mShadowDrawOverflow = false;
@@ -230,6 +240,10 @@ private:
 
 	bool mFrustumCullingEnabled = true;
 	bool mOctreeFrustumEnabled = false;
+	bool mBillboardLodEnabled = true;
+	float mBillboardLodDistance = 130.0f;
+	float mRockTessNear = 50.0f;
+	float mRockTessFar = 320.0f;
 	Frustum mFrustum{};
 	Octree mOctree{};
 	std::vector<OctreeItem> mOctreeItems;
@@ -254,8 +268,13 @@ private:
 	int mTessDebugMode = 0;
 	float mPerlinSeed = 0.0f;
 
+	DistantBillboardRenderer mDistantBillboards{};
+	int mRockBillboardSrvBase = 0;
+	DrawSubmesh mRockBillboardMaterial{};
+
 	RenderingSystem mRenderer{};
 	UINT mDeferredSrvHeapBase = 0; // смещение SRV G-buffer в общем heap
+	UINT mBillboardInstanceSrvIndex = 0;
 	std::vector<GpuLight> mSceneLights;
 	LightRainSystem mLightRain{};
 	LightRainCircleRenderer mLightRainCircles{};

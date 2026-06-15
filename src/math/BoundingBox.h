@@ -15,6 +15,9 @@ struct Aabb
 
 bool AabbIntersects(const Aabb& a, const Aabb& b);
 
+// Евклидово расстояние от точки до ближайшей точки на AABB (0, если точка внутри).
+float DistancePointToAabb(const DirectX::XMFLOAT3& point, const Aabb& box);
+
 Aabb ComputeMeshLocalBounds(const struct ObjMeshData& mesh);
 
 Aabb ComputeSubmeshLocalBounds(const struct ObjMeshData& mesh, const struct ObjSubmeshRange& submesh);

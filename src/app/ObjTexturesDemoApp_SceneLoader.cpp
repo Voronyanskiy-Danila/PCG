@@ -345,11 +345,12 @@ void ObjTexturesDemoApp::LoadModelAndTextures()
 	// После материалов в heap идут SRV G-buffer + structured buffer огней (RenderingSystem)
 	mDeferredSrvHeapBase = 1u + materialSlots;
 	const UINT srvCount = mDeferredSrvHeapBase + mRenderer.DeferredSrvDescriptorsNeeded();
-	BuildDescriptorHeaps(srvCount);
+	mBillboardInstanceSrvIndex = srvCount;
+	BuildDescriptorHeaps(srvCount + 1u);
 	BuildConstantBuffers();
 
-	mTextureGPU.assign(srvCount, {});
-	mTextureUploads.assign(srvCount, {});
+	mTextureGPU.assign(srvCount + 1u, {});
+	mTextureUploads.assign(srvCount + 1u, {});
 
 	LoadTextureToSrvSlot(0u, L"content/models/white.dds");
 
@@ -362,6 +363,11 @@ void ObjTexturesDemoApp::LoadModelAndTextures()
 	mSceneGeo = BuildModelGeometry(sponzaData, "SponzaModel");
 	mPropGeo = BuildModelGeometry(cerberusData, "CerberusProp");
 	mRockSubmeshes = BuildDrawSubmeshes(rockData, rockMatToSrvBase);
+	if (!mRockSubmeshes.empty())
+	{
+		mRockBillboardMaterial = mRockSubmeshes[0];
+		mRockBillboardSrvBase = mRockBillboardMaterial.MaterialSrvBase;
+	}
 	mSceneSubmeshes = BuildDrawSubmeshes(sponzaData, sponzaMatToSrvBase);
 	mPropSubmeshes = BuildDrawSubmeshes(cerberusData, cerberusMatToSrvBase);
 
@@ -392,13 +398,22 @@ void ObjTexturesDemoApp::LoadModelAndTextures()
 	const float rockScale = (rockExtent > 1e-5f) ? (rockTarget / rockExtent) : 1.0f;
 	const float instanceSpacing = (std::max)(rockTarget * 1.08f, 10.0f);
 
-	const float courtyardX = mCourtyardAnchor.x;
-	const float courtyardY = mCourtyardAnchor.y;
-	const float courtyardZ = mCourtyardAnchor.z;
-
 	// Камни на крыше Sponza (низ меша = верх AABB здания + зазор).
 	const float rockFloorY = sponzaLocalBounds.Max.y + kRockClearanceAboveSponzaTop;
 	mRockClusterCenterY = rockFloorY + rockTarget * 0.55f;
+
+	const float rockViewSpan = (std::max)(mRockClusterCenterY - courtyardFloorTopY, rockTarget);
+	mBillboardLodDistance = (std::max)({
+		sponzaExtent * 0.75f,
+		rockViewSpan * 1.35f,
+		instanceSpacing * 12.0f,
+		kBillboardLodDistanceMin});
+	mRockTessNear = (std::max)(rockTarget * 3.5f, sponzaExtent * 0.12f);
+	mRockTessFar = (std::max)(sponzaExtent * 0.58f, mRockTessNear * 4.0f);
+
+	const float courtyardX = mCourtyardAnchor.x;
+	const float courtyardY = mCourtyardAnchor.y;
+	const float courtyardZ = mCourtyardAnchor.z;
 
 	mMeshLocalBounds = rockLocalBounds;
 	BuildSceneInstances(

@@ -117,6 +117,11 @@ bool ObjTexturesDemoApp::Initialize()
 	mRenderer.LoadIblTextures(md3dDevice.Get(), mCommandList.Get());
 	mRenderer.InitializeParticles(md3dDevice.Get(), 256u);
 	mLightRainCircles.Initialize(md3dDevice.Get(), mBackBufferFormat, 512u);
+	mDistantBillboards.Initialize(
+		md3dDevice.Get(),
+		mSrvHeap.Get(),
+		mBillboardInstanceSrvIndex,
+		mCbvSrvUavDescriptorSize);
 	mRenderer.ResizeGBuffer(md3dDevice.Get(), static_cast<UINT>(mClientWidth), static_cast<UINT>(mClientHeight));
 	RefreshDeferredSrvs();
 	BuildDeferredGeometryPipeline();
@@ -222,6 +227,7 @@ void ObjTexturesDemoApp::Update(const FrameTimer& gt)
 	mDisplayFps = (dt > 1e-6f) ? (1.0f / dt) : 0.0f;
 
 	UpdateVisibility();
+	UpdateInstanceLod();
 	UpdateShadowCasters();
 
 	UpdateCameraAttachedSpotLight();
@@ -255,6 +261,62 @@ void ObjTexturesDemoApp::UpdateVisibility()
 		CullInstancesLinear();
 
 	mVisibleCount = static_cast<UINT>(mVisibleInstances.size());
+}
+
+void ObjTexturesDemoApp::UpdateInstanceLod()
+{
+	mMeshInstances.clear();
+	mBillboardInstances.clear();
+
+	if (!mBillboardLodEnabled || mInstances.empty())
+	{
+		mMeshInstances = mVisibleInstances;
+		mMeshLodCount = static_cast<UINT>(mMeshInstances.size());
+		mBillboardCount = 0u;
+		return;
+	}
+
+	mMeshInstances.reserve(mVisibleInstances.size());
+	mBillboardInstances.reserve(mVisibleInstances.size());
+
+	const XMVECTOR eye = XMLoadFloat3(&mCameraPos);
+
+	for (uint32_t idx : mVisibleInstances)
+	{
+		const SceneInstance& inst = mInstances[idx];
+		if (!inst.WorldBounds.IsValid())
+			continue;
+
+		const Aabb& b = inst.WorldBounds;
+		const XMFLOAT3 center = {
+			(b.Min.x + b.Max.x) * 0.5f,
+			(b.Min.y + b.Max.y) * 0.5f,
+			(b.Min.z + b.Max.z) * 0.5f
+		};
+		const XMVECTOR c = XMLoadFloat3(&center);
+		const float distCenter = XMVectorGetX(XMVector3Length(XMVectorSubtract(c, eye)));
+		const float distBounds = DistancePointToAabb(mCameraPos, b);
+		// max: снизу не «прилипать» к нижней грани AABB, вблизи — корректный переход у поверхности.
+		const float dist = (std::max)(distCenter, distBounds);
+
+		if (dist > mBillboardLodDistance)
+		{
+			const float ex = b.Max.x - b.Min.x;
+			const float ey = b.Max.y - b.Min.y;
+			const float ez = b.Max.z - b.Min.z;
+			BillboardGpu bb{};
+			bb.Data0 = XMFLOAT4(center.x, center.y, center.z, (std::max)(ex, ez) * 0.5f);
+			bb.Data1 = XMFLOAT4(ey * 0.5f, 0.0f, 0.0f, 0.0f);
+			mBillboardInstances.push_back(bb);
+		}
+		else
+		{
+			mMeshInstances.push_back(idx);
+		}
+	}
+
+	mMeshLodCount = static_cast<UINT>(mMeshInstances.size());
+	mBillboardCount = static_cast<UINT>(mBillboardInstances.size());
 }
 
 void ObjTexturesDemoApp::CullInstancesLinear()
@@ -654,6 +716,7 @@ void ObjTexturesDemoApp::UpdateWindowCaption()
 	const wchar_t* chr = mRenderer.PostChromaticEnabled() ? L"on" : L"off";
 	const wchar_t* vaseAnim = mVaseVertexAnimEnabled ? L"on" : L"off";
 	const wchar_t* lightRain = mLightRainEnabled ? L"on" : L"off";
+	const wchar_t* billboardLod = mBillboardLodEnabled ? L"on" : L"off";
 
 	if (mShadowDrawOverflow || mGeometryDrawOverflow)
 	{
@@ -674,12 +737,15 @@ void ObjTexturesDemoApp::UpdateWindowCaption()
 		swprintf_s(
 			cap,
 			160,
-			L"Lab 8 | %.0f FPS | rain %u/%u vase %s | perl %.0f | shd %u/%u | vig %s chr %s",
+			L"Lab 8 | %.0f FPS | rain %u/%u vase %s | perl %.0f | bb %u/%u %s | shd %u/%u | vig %s chr %s",
 			mDisplayFps,
 			mLightRain.LandedDropCount(),
 			mLightRain.ActiveDropCount(),
 			vaseAnim,
 			mPerlinSeed,
+			mBillboardCount,
+			mMeshLodCount,
+			billboardLod,
 			mShadowDrawSlotsUsed,
 			mShadowDrawCallsNeeded,
 			vig,
@@ -767,6 +833,12 @@ LRESULT ObjTexturesDemoApp::MsgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
 			if (wParam == VK_F6)
 			{
 				mPerlinSeed += 1.0f;
+				UpdateWindowCaption();
+				return 0;
+			}
+			if (wParam == VK_F7)
+			{
+				mBillboardLodEnabled = !mBillboardLodEnabled;
 				UpdateWindowCaption();
 				return 0;
 			}

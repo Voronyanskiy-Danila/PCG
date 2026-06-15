@@ -44,6 +44,20 @@ bool AabbIntersects(const Aabb& a, const Aabb& b)
 		a.Min.z <= b.Max.z && a.Max.z >= b.Min.z;
 }
 
+float DistancePointToAabb(const XMFLOAT3& point, const Aabb& box)
+{
+	if (!box.IsValid())
+		return std::numeric_limits<float>::max();
+
+	const float cx = (std::clamp)(point.x, box.Min.x, box.Max.x);
+	const float cy = (std::clamp)(point.y, box.Min.y, box.Max.y);
+	const float cz = (std::clamp)(point.z, box.Min.z, box.Max.z);
+	const float dx = point.x - cx;
+	const float dy = point.y - cy;
+	const float dz = point.z - cz;
+	return std::sqrt(dx * dx + dy * dy + dz * dz);
+}
+
 Aabb ComputeMeshLocalBounds(const ObjMeshData& mesh)
 {
 	Aabb b{};
